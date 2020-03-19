@@ -73,6 +73,7 @@ pub struct Command {
     cwd: Option<OsString>,
     flags: u32,
     detach: bool, // not currently exposed in std::process
+    no_window: bool,
     stdin: Option<Stdio>,
     stdout: Option<Stdio>,
     stderr: Option<Stdio>,
@@ -103,7 +104,8 @@ impl Command {
             env: Default::default(),
             cwd: None,
             flags: 0,
-            detach: false,
+            detach: false, // overrides no_window if set to true
+            no_window: false,
             stdin: None,
             stdout: None,
             stderr: None,
@@ -131,6 +133,11 @@ impl Command {
     pub fn creation_flags(&mut self, flags: u32) {
         self.flags = flags;
     }
+    pub fn no_window(&mut self) {
+        if (self.detach)
+            self.detach = false;
+        self.no_window = true;
+    } 
 
     pub fn spawn(
         &mut self,
@@ -169,6 +176,9 @@ impl Command {
         let mut flags = self.flags | c::CREATE_UNICODE_ENVIRONMENT;
         if self.detach {
             flags |= c::DETACHED_PROCESS | c::CREATE_NEW_PROCESS_GROUP;
+        } else if self.no_window {
+            flags |= c::CREATE_NEW_CONSOLE;
+            flags |= c::CREATE_NO_WINDOW;
         }
 
         let (envp, _data) = make_envp(maybe_env)?;

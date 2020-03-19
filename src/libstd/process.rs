@@ -559,6 +559,30 @@ impl Command {
         self
     }
 
+    /// The process is a console application that is being run without a console window.
+    /// Therefore, the console handle for the application is not set.
+    /// 
+    /// # Examples
+    ///
+    /// Basic usage:
+    ///
+    /// ```no_run
+    /// use std::process::{Command, Stdio};
+    ///
+    /// Command::new("dir")
+    ///         .stdin(Stdio::null())
+    ///         .stdout(Stdio::inherit())
+    ///         .env("PATH", "C:\")
+    ///         .no_window()
+    ///         .spawn()
+    ///         .expect("ls command failed to start");
+    /// ```
+    #[cfg(target_os = "windows")]
+    pub fn no_window(&mut self) -> &mut Command {
+        self.inner.no_window();
+        self
+    }
+
     /// Inserts or updates an environment variable mapping.
     ///
     /// Note that environment variable names are case-insensitive (but case-preserving) on Windows,
