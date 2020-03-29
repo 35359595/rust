@@ -133,8 +133,9 @@ impl Command {
         self.flags = flags;
     }
     pub fn no_window(&mut self) {
-        if (self.detach)
+        if self.detach {
             self.detach = false;
+        }
         self.no_window = true;
     } 
 
@@ -176,7 +177,6 @@ impl Command {
         if self.detach {
             flags |= c::DETACHED_PROCESS | c::CREATE_NEW_PROCESS_GROUP;
         } else if self.no_window {
-            flags |= c::CREATE_NEW_CONSOLE;
             flags |= c::CREATE_NO_WINDOW;
         }
 
