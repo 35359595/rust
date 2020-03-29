@@ -76,7 +76,7 @@ impl EarlyLintPass for WhileTrue {
                 if let ast::LitKind::Bool(true) = lit.kind {
                     if !lit.span.from_expansion() {
                         let msg = "denote infinite loops with `loop { ... }`";
-                        let condition_span = cx.sess.source_map().def_span(e.span);
+                        let condition_span = cx.sess.source_map().guess_head_span(e.span);
                         cx.struct_span_lint(WHILE_TRUE, condition_span, |lint| {
                             lint.build(msg)
                                 .span_suggestion_short(
@@ -269,7 +269,7 @@ impl EarlyLintPass for UnsafeCode {
                 })
             }
 
-            _ => return,
+            _ => {}
         }
     }
 
@@ -349,6 +349,7 @@ impl MissingDoc {
         id: Option<hir::HirId>,
         attrs: &[ast::Attribute],
         sp: Span,
+        article: &'static str,
         desc: &'static str,
     ) {
         // If we're building a test harness, then warning about
@@ -373,9 +374,13 @@ impl MissingDoc {
 
         let has_doc = attrs.iter().any(|a| has_doc(a));
         if !has_doc {
-            cx.struct_span_lint(MISSING_DOCS, cx.tcx.sess.source_map().def_span(sp), |lint| {
-                lint.build(&format!("missing documentation for {}", desc)).emit()
-            });
+            cx.struct_span_lint(
+                MISSING_DOCS,
+                cx.tcx.sess.source_map().guess_head_span(sp),
+                |lint| {
+                    lint.build(&format!("missing documentation for {} {}", article, desc)).emit()
+                },
+            );
         }
     }
 }
@@ -398,14 +403,14 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MissingDoc {
     }
 
     fn check_crate(&mut self, cx: &LateContext<'_, '_>, krate: &hir::Crate<'_>) {
-        self.check_missing_docs_attrs(cx, None, &krate.item.attrs, krate.item.span, "crate");
+        self.check_missing_docs_attrs(cx, None, &krate.item.attrs, krate.item.span, "the", "crate");
 
         for macro_def in krate.exported_macros {
             let has_doc = macro_def.attrs.iter().any(|a| has_doc(a));
             if !has_doc {
                 cx.struct_span_lint(
                     MISSING_DOCS,
-                    cx.tcx.sess.source_map().def_span(macro_def.span),
+                    cx.tcx.sess.source_map().guess_head_span(macro_def.span),
                     |lint| lint.build("missing documentation for macro").emit(),
                 );
             }
@@ -413,12 +418,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MissingDoc {
     }
 
     fn check_item(&mut self, cx: &LateContext<'_, '_>, it: &hir::Item<'_>) {
-        let desc = match it.kind {
-            hir::ItemKind::Fn(..) => "a function",
-            hir::ItemKind::Mod(..) => "a module",
-            hir::ItemKind::Enum(..) => "an enum",
-            hir::ItemKind::Struct(..) => "a struct",
-            hir::ItemKind::Union(..) => "a union",
+        match it.kind {
             hir::ItemKind::Trait(.., trait_item_refs) => {
                 // Issue #11592: traits are always considered exported, even when private.
                 if let hir::VisibilityKind::Inherited = it.vis.node {
@@ -428,33 +428,39 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MissingDoc {
                     }
                     return;
                 }
-                "a trait"
             }
-            hir::ItemKind::TyAlias(..) => "a type alias",
             hir::ItemKind::Impl { of_trait: Some(ref trait_ref), items, .. } => {
                 // If the trait is private, add the impl items to `private_traits` so they don't get
                 // reported for missing docs.
                 let real_trait = trait_ref.path.res.def_id();
                 if let Some(hir_id) = cx.tcx.hir().as_local_hir_id(real_trait) {
-                    match cx.tcx.hir().find(hir_id) {
-                        Some(Node::Item(item)) => {
-                            if let hir::VisibilityKind::Inherited = item.vis.node {
-                                for impl_item_ref in items {
-                                    self.private_traits.insert(impl_item_ref.id.hir_id);
-                                }
+                    if let Some(Node::Item(item)) = cx.tcx.hir().find(hir_id) {
+                        if let hir::VisibilityKind::Inherited = item.vis.node {
+                            for impl_item_ref in items {
+                                self.private_traits.insert(impl_item_ref.id.hir_id);
                             }
                         }
-                        _ => {}
                     }
                 }
                 return;
             }
-            hir::ItemKind::Const(..) => "a constant",
-            hir::ItemKind::Static(..) => "a static",
+
+            hir::ItemKind::TyAlias(..)
+            | hir::ItemKind::Fn(..)
+            | hir::ItemKind::Mod(..)
+            | hir::ItemKind::Enum(..)
+            | hir::ItemKind::Struct(..)
+            | hir::ItemKind::Union(..)
+            | hir::ItemKind::Const(..)
+            | hir::ItemKind::Static(..) => {}
+
             _ => return,
         };
 
-        self.check_missing_docs_attrs(cx, Some(it.hir_id), &it.attrs, it.span, desc);
+        let def_id = cx.tcx.hir().local_def_id(it.hir_id);
+        let (article, desc) = cx.tcx.article_and_description(def_id);
+
+        self.check_missing_docs_attrs(cx, Some(it.hir_id), &it.attrs, it.span, article, desc);
     }
 
     fn check_trait_item(&mut self, cx: &LateContext<'_, '_>, trait_item: &hir::TraitItem<'_>) {
@@ -462,17 +468,15 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MissingDoc {
             return;
         }
 
-        let desc = match trait_item.kind {
-            hir::TraitItemKind::Const(..) => "an associated constant",
-            hir::TraitItemKind::Fn(..) => "a trait method",
-            hir::TraitItemKind::Type(..) => "an associated type",
-        };
+        let def_id = cx.tcx.hir().local_def_id(trait_item.hir_id);
+        let (article, desc) = cx.tcx.article_and_description(def_id);
 
         self.check_missing_docs_attrs(
             cx,
             Some(trait_item.hir_id),
             &trait_item.attrs,
             trait_item.span,
+            article,
             desc,
         );
     }
@@ -483,29 +487,33 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MissingDoc {
             return;
         }
 
-        let desc = match impl_item.kind {
-            hir::ImplItemKind::Const(..) => "an associated constant",
-            hir::ImplItemKind::Fn(..) => "a method",
-            hir::ImplItemKind::TyAlias(_) => "an associated type",
-            hir::ImplItemKind::OpaqueTy(_) => "an associated `impl Trait` type",
-        };
+        let def_id = cx.tcx.hir().local_def_id(impl_item.hir_id);
+        let (article, desc) = cx.tcx.article_and_description(def_id);
         self.check_missing_docs_attrs(
             cx,
             Some(impl_item.hir_id),
             &impl_item.attrs,
             impl_item.span,
+            article,
             desc,
         );
     }
 
     fn check_struct_field(&mut self, cx: &LateContext<'_, '_>, sf: &hir::StructField<'_>) {
         if !sf.is_positional() {
-            self.check_missing_docs_attrs(cx, Some(sf.hir_id), &sf.attrs, sf.span, "a struct field")
+            self.check_missing_docs_attrs(
+                cx,
+                Some(sf.hir_id),
+                &sf.attrs,
+                sf.span,
+                "a",
+                "struct field",
+            )
         }
     }
 
     fn check_variant(&mut self, cx: &LateContext<'_, '_>, v: &hir::Variant<'_>) {
-        self.check_missing_docs_attrs(cx, Some(v.id), &v.attrs, v.span, "a variant");
+        self.check_missing_docs_attrs(cx, Some(v.id), &v.attrs, v.span, "a", "variant");
     }
 }
 
@@ -974,7 +982,7 @@ impl UnreachablePub {
                 if span.from_expansion() {
                     applicability = Applicability::MaybeIncorrect;
                 }
-                let def_span = cx.tcx.sess.source_map().def_span(span);
+                let def_span = cx.tcx.sess.source_map().guess_head_span(span);
                 cx.struct_span_lint(UNREACHABLE_PUB, def_span, |lint| {
                     let mut err = lint.build(&format!("unreachable `pub` {}", what));
                     let replacement = if cx.tcx.features().crate_visibility_modifier {

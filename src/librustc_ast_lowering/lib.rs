@@ -32,12 +32,11 @@
 
 #![feature(array_value_iter)]
 #![feature(crate_visibility_modifier)]
+#![feature(marker_trait_attr)]
+#![feature(specialization)]
+#![feature(or_patterns)]
 #![recursion_limit = "256"]
 
-use rustc::arena::Arena;
-use rustc::dep_graph::DepGraph;
-use rustc::hir::map::definitions::{DefKey, DefPathData, Definitions};
-use rustc::{bug, span_bug};
 use rustc_ast::ast;
 use rustc_ast::ast::*;
 use rustc_ast::attr;
@@ -54,6 +53,7 @@ use rustc_errors::struct_span_err;
 use rustc_hir as hir;
 use rustc_hir::def::{DefKind, Namespace, PartialRes, PerNS, Res};
 use rustc_hir::def_id::{DefId, DefIdMap, LocalDefId, CRATE_DEF_INDEX};
+use rustc_hir::definitions::{DefKey, DefPathData, Definitions};
 use rustc_hir::intravisit;
 use rustc_hir::{ConstArg, GenericArg, ParamName};
 use rustc_index::vec::IndexVec;
@@ -85,6 +85,8 @@ mod path;
 
 const HIR_ID_COUNTER_LOCKED: u32 = 0xFFFFFFFF;
 
+rustc_hir::arena_types!(::arena::declare_arena, [], 'tcx);
+
 struct LoweringContext<'a, 'hir: 'a> {
     crate_root: Option<Symbol>,
 
@@ -115,6 +117,10 @@ struct LoweringContext<'a, 'hir: 'a> {
     modules: BTreeMap<hir::HirId, hir::ModuleItems>,
 
     generator_kind: Option<hir::GeneratorKind>,
+
+    /// When inside an `async` context, this is the `HirId` of the
+    /// `task_context` local bound to the resume argument of the generator.
+    task_context: Option<hir::HirId>,
 
     /// Used to get the current `fn`'s def span to point to when using `await`
     /// outside of an `async fn`.
@@ -255,17 +261,11 @@ impl<'a> ImplTraitContext<'_, 'a> {
 
 pub fn lower_crate<'a, 'hir>(
     sess: &'a Session,
-    dep_graph: &'a DepGraph,
     krate: &'a Crate,
     resolver: &'a mut dyn Resolver,
     nt_to_tokenstream: NtToTokenstream,
     arena: &'hir Arena<'hir>,
 ) -> hir::Crate<'hir> {
-    // We're constructing the HIR here; we don't care what we will
-    // read, since we haven't even constructed the *input* to
-    // incr. comp. yet.
-    dep_graph.assert_ignored();
-
     let _prof_timer = sess.prof.verbose_generic_activity("hir_lowering");
 
     LoweringContext {
@@ -294,6 +294,7 @@ pub fn lower_crate<'a, 'hir>(
         item_local_id_counters: Default::default(),
         node_id_to_hir_id: IndexVec::new(),
         generator_kind: None,
+        task_context: None,
         current_item: None,
         lifetimes_to_define: Vec::new(),
         is_collecting_in_band_lifetimes: false,
@@ -667,7 +668,7 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
     fn expect_full_res(&mut self, id: NodeId) -> Res<NodeId> {
         self.resolver.get_partial_res(id).map_or(Res::Err, |pr| {
             if pr.unresolved_segments() != 0 {
-                bug!("path not fully resolved: {:?}", pr);
+                panic!("path not fully resolved: {:?}", pr);
             }
             pr.base_res()
         })
@@ -1335,7 +1336,7 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
                     }
                 }
             }
-            TyKind::MacCall(_) => bug!("`TyKind::MacCall` should have been expanded by now"),
+            TyKind::MacCall(_) => panic!("`TyKind::MacCall` should have been expanded by now"),
             TyKind::CVarArgs => {
                 self.sess.delay_span_bug(
                     t.span,
@@ -1570,7 +1571,7 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
                         hir::LifetimeName::Param(param_name) => {
                             (param_name, hir::LifetimeParamKind::Explicit)
                         }
-                        _ => bug!("expected `LifetimeName::Param` or `ParamName::Plain`"),
+                        _ => panic!("expected `LifetimeName::Param` or `ParamName::Plain`"),
                     };
 
                     self.output_lifetime_params.push(hir::GenericParam {
@@ -2091,7 +2092,7 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
                     | hir::LifetimeName::Underscore
                     | hir::LifetimeName::Static => hir::ParamName::Plain(lt.name.ident()),
                     hir::LifetimeName::ImplicitObjectLifetimeDefault => {
-                        span_bug!(
+                        self.sess.diagnostic().span_bug(
                             param.ident.span,
                             "object-lifetime-default should not occur here",
                         );
@@ -2158,7 +2159,7 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
     ) -> hir::TraitRef<'hir> {
         let path = match self.lower_qpath(p.ref_id, &None, &p.path, ParamMode::Explicit, itctx) {
             hir::QPath::Resolved(None, path) => path,
-            qpath => bug!("lower_trait_ref: unexpected QPath `{:?}`", qpath),
+            qpath => panic!("lower_trait_ref: unexpected QPath `{:?}`", qpath),
         };
         hir::TraitRef { path, hir_ref_id: self.lower_node_id(p.ref_id) }
     }

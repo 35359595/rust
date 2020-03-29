@@ -81,8 +81,6 @@ impl fmt::Debug for ty::RegionKind {
         match *self {
             ty::ReEarlyBound(ref data) => write!(f, "ReEarlyBound({}, {})", data.index, data.name),
 
-            ty::ReClosureBound(ref vid) => write!(f, "ReClosureBound({:?})", vid),
-
             ty::ReLateBound(binder_id, ref bound_region) => {
                 write!(f, "ReLateBound({:?}, {:?})", binder_id, bound_region)
             }
@@ -265,7 +263,7 @@ CloneTypeFoldableAndLiftImpls! {
     ::rustc_span::symbol::Symbol,
     ::rustc_hir::def::Res,
     ::rustc_hir::def_id::DefId,
-    ::rustc_hir::InlineAsmInner,
+    ::rustc_hir::LlvmInlineAsmInner,
     ::rustc_hir::MatchSource,
     ::rustc_hir::Mutability,
     ::rustc_hir::Unsafety,

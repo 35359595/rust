@@ -9,6 +9,7 @@
 #![feature(const_if_match)]
 #![feature(const_fn)]
 #![feature(const_panic)]
+#![cfg_attr(not(bootstrap), feature(negative_impls))]
 #![feature(nll)]
 #![feature(optin_builtin_traits)]
 #![feature(specialization)]
@@ -72,18 +73,8 @@ impl Globals {
 scoped_tls::scoped_thread_local!(pub static GLOBALS: Globals);
 
 /// Differentiates between real files and common virtual files.
-#[derive(
-    Debug,
-    Eq,
-    PartialEq,
-    Clone,
-    Ord,
-    PartialOrd,
-    Hash,
-    RustcDecodable,
-    RustcEncodable,
-    HashStable_Generic
-)]
+#[derive(Debug, Eq, PartialEq, Clone, Ord, PartialOrd, Hash, RustcDecodable, RustcEncodable)]
+#[derive(HashStable_Generic)]
 pub enum FileName {
     Real(PathBuf),
     /// Call to `quote!`.
@@ -856,7 +847,7 @@ pub enum ExternalSource {
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub enum ExternalSourceKind {
     /// The external source has been loaded already.
-    Present(String),
+    Present(Lrc<String>),
     /// No attempt has been made to load the external source.
     AbsentOk,
     /// A failed attempt has been made to load the external source.
@@ -872,7 +863,7 @@ impl ExternalSource {
         }
     }
 
-    pub fn get_source(&self) -> Option<&str> {
+    pub fn get_source(&self) -> Option<&Lrc<String>> {
         match self {
             ExternalSource::Foreign { kind: ExternalSourceKind::Present(ref src), .. } => Some(src),
             _ => None,
@@ -1138,7 +1129,7 @@ impl SourceFile {
                     hasher.write(src.as_bytes());
 
                     if hasher.finish::<u128>() == self.src_hash {
-                        *src_kind = ExternalSourceKind::Present(src);
+                        *src_kind = ExternalSourceKind::Present(Lrc::new(src));
                         return true;
                     }
                 } else {

@@ -1023,12 +1023,19 @@ impl<'a, 'tcx> NamePrivacyVisitor<'a, 'tcx> {
         span: Span,            // span of the field pattern, e.g., `x: 0`
         def: &'tcx ty::AdtDef, // definition of the struct or enum
         field: &'tcx ty::FieldDef,
+        in_update_syntax: bool,
     ) {
         // definition of the field
         let ident = Ident::new(kw::Invalid, use_ctxt);
         let current_hir = self.current_item;
         let def_id = self.tcx.adjust_ident_and_get_scope(ident, def.did, current_hir).1;
         if !def.is_enum() && !field.vis.is_accessible_from(def_id, self.tcx) {
+            let label = if in_update_syntax {
+                format!("field `{}` is private", field.ident)
+            } else {
+                "private field".to_string()
+            };
+
             struct_span_err!(
                 self.tcx.sess,
                 span,
@@ -1038,7 +1045,7 @@ impl<'a, 'tcx> NamePrivacyVisitor<'a, 'tcx> {
                 def.variant_descr(),
                 self.tcx.def_path_str(def.did)
             )
-            .span_label(span, format!("field `{}` is private", field.ident))
+            .span_label(span, label)
             .emit();
         }
     }
@@ -1106,13 +1113,13 @@ impl<'a, 'tcx> Visitor<'tcx> for NamePrivacyVisitor<'a, 'tcx> {
                             Some(field) => (field.ident.span, field.span),
                             None => (base.span, base.span),
                         };
-                        self.check_field(use_ctxt, span, adt, variant_field);
+                        self.check_field(use_ctxt, span, adt, variant_field, true);
                     }
                 } else {
                     for field in fields {
                         let use_ctxt = field.ident.span;
                         let index = self.tcx.field_index(field.hir_id, self.tables);
-                        self.check_field(use_ctxt, field.span, adt, &variant.fields[index]);
+                        self.check_field(use_ctxt, field.span, adt, &variant.fields[index], false);
                     }
                 }
             }
@@ -1131,7 +1138,7 @@ impl<'a, 'tcx> Visitor<'tcx> for NamePrivacyVisitor<'a, 'tcx> {
                 for field in fields {
                     let use_ctxt = field.ident.span;
                     let index = self.tcx.field_index(field.hir_id, self.tables);
-                    self.check_field(use_ctxt, field.span, adt, &variant.fields[index]);
+                    self.check_field(use_ctxt, field.span, adt, &variant.fields[index], false);
                 }
             }
             _ => {}
@@ -1180,7 +1187,11 @@ impl<'a, 'tcx> TypePrivacyVisitor<'a, 'tcx> {
     fn check_def_id(&mut self, def_id: DefId, kind: &str, descr: &dyn fmt::Display) -> bool {
         let is_error = !self.item_is_accessible(def_id);
         if is_error {
-            self.tcx.sess.span_err(self.span, &format!("{} `{}` is private", kind, descr));
+            self.tcx
+                .sess
+                .struct_span_err(self.span, &format!("{} `{}` is private", kind, descr))
+                .span_label(self.span, &format!("private {}", kind))
+                .emit();
         }
         is_error
     }
@@ -1309,12 +1320,20 @@ impl<'a, 'tcx> Visitor<'tcx> for TypePrivacyVisitor<'a, 'tcx> {
             let is_local_static =
                 if let DefKind::Static = kind { def_id.is_local() } else { false };
             if !self.item_is_accessible(def_id) && !is_local_static {
-                let name = match *qpath {
-                    hir::QPath::Resolved(_, ref path) => path.to_string(),
-                    hir::QPath::TypeRelative(_, ref segment) => segment.ident.to_string(),
+                let sess = self.tcx.sess;
+                let sm = sess.source_map();
+                let name = match qpath {
+                    hir::QPath::Resolved(_, path) => sm.span_to_snippet(path.span).ok(),
+                    hir::QPath::TypeRelative(_, segment) => Some(segment.ident.to_string()),
                 };
-                let msg = format!("{} `{}` is private", kind.descr(def_id), name);
-                self.tcx.sess.span_err(span, &msg);
+                let kind = kind.descr(def_id);
+                let msg = match name {
+                    Some(name) => format!("{} `{}` is private", kind, name),
+                    None => format!("{} is private", kind),
+                };
+                sess.struct_span_err(span, &msg)
+                    .span_label(span, &format!("private {}", kind))
+                    .emit();
                 return;
             }
         }
@@ -1423,7 +1442,7 @@ impl<'a, 'tcx> ObsoleteVisiblePrivateTypesVisitor<'a, 'tcx> {
                 Some(_) | None => false,
             }
         } else {
-            return false;
+            false
         }
     }
 
@@ -1837,7 +1856,7 @@ impl SearchInterfaceForPrivateItemsVisitor<'tcx> {
             && self.tcx.is_private_dep(item_id.krate);
 
         log::debug!("leaks_private_dep(item_id={:?})={}", item_id, ret);
-        return ret;
+        ret
     }
 }
 

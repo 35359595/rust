@@ -98,6 +98,8 @@
 #![feature(is_sorted)]
 #![feature(lang_items)]
 #![feature(link_llvm_intrinsics)]
+#![feature(llvm_asm)]
+#![cfg_attr(not(bootstrap), feature(negative_impls))]
 #![feature(never_type)]
 #![feature(nll)]
 #![feature(exhaustive_patterns)]
@@ -132,7 +134,6 @@
 #![feature(f16c_target_feature)]
 #![feature(hexagon_target_feature)]
 #![feature(const_transmute)]
-#![feature(structural_match)]
 #![feature(abi_unadjusted)]
 #![feature(adx_target_feature)]
 #![feature(maybe_uninit_slice)]
@@ -140,6 +141,7 @@
 #![feature(associated_type_bounds)]
 #![feature(const_type_id)]
 #![feature(const_caller_location)]
+#![feature(option_zip)]
 #![feature(no_niche)] // rust-lang/rust#68303
 
 #[prelude_import]

@@ -17,7 +17,6 @@ pub use rustc_hir::def::{Namespace, PerNS};
 use Determinacy::*;
 
 use rustc::hir::exports::ExportMap;
-use rustc::hir::map::{DefKey, Definitions};
 use rustc::middle::cstore::{CrateStore, MetadataLoaderDyn};
 use rustc::span_bug;
 use rustc::ty::query::Providers;
@@ -38,6 +37,7 @@ use rustc_expand::base::SyntaxExtension;
 use rustc_hir::def::Namespace::*;
 use rustc_hir::def::{self, CtorOf, DefKind, NonMacroAttrKind, PartialRes};
 use rustc_hir::def_id::{CrateNum, DefId, DefIdMap, CRATE_DEF_INDEX};
+use rustc_hir::definitions::{DefKey, Definitions};
 use rustc_hir::PrimTy::{self, Bool, Char, Float, Int, Str, Uint};
 use rustc_hir::{GlobMap, TraitMap};
 use rustc_metadata::creader::{CStore, CrateLoader};
@@ -1871,7 +1871,7 @@ impl<'a> Resolver<'a> {
                 // No adjustments
             }
         }
-        let result = self.resolve_ident_in_module_unadjusted_ext(
+        self.resolve_ident_in_module_unadjusted_ext(
             module,
             ident,
             ns,
@@ -1879,8 +1879,7 @@ impl<'a> Resolver<'a> {
             false,
             record_used,
             path_span,
-        );
-        result
+        )
     }
 
     fn resolve_crate_root(&mut self, ident: Ident) -> Module<'a> {
@@ -2518,7 +2517,8 @@ impl<'a> Resolver<'a> {
             false => "defined",
         };
 
-        let (name, span) = (ident.name, self.session.source_map().def_span(new_binding.span));
+        let (name, span) =
+            (ident.name, self.session.source_map().guess_head_span(new_binding.span));
 
         if let Some(s) = self.name_already_seen.get(&name) {
             if s == &span {
@@ -2559,7 +2559,7 @@ impl<'a> Resolver<'a> {
 
         err.span_label(span, format!("`{}` re{} here", name, new_participle));
         err.span_label(
-            self.session.source_map().def_span(old_binding.span),
+            self.session.source_map().guess_head_span(old_binding.span),
             format!("previous {} of the {} `{}` here", old_noun, old_kind, name),
         );
 

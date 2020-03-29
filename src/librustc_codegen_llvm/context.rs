@@ -7,7 +7,6 @@ use crate::type_::Type;
 use crate::value::Value;
 
 use rustc::bug;
-use rustc::dep_graph::DepGraphSafe;
 use rustc::mir::mono::CodegenUnit;
 use rustc::ty::layout::{
     HasParamEnv, LayoutError, LayoutOf, PointeeInfo, Size, TyLayout, VariantIdx,
@@ -90,8 +89,6 @@ pub struct CodegenCx<'ll, 'tcx> {
     local_gen_sym_counter: Cell<usize>,
 }
 
-impl<'ll, 'tcx> DepGraphSafe for CodegenCx<'ll, 'tcx> {}
-
 pub fn get_reloc_model(sess: &Session) -> llvm::RelocMode {
     let reloc_model_arg = match sess.opts.cg.relocation_model {
         Some(ref s) => &s[..],
@@ -166,7 +163,7 @@ pub unsafe fn create_module(
         llvm::LLVMRustSetDataLayoutFromTargetMachine(llmod, tm);
         llvm::LLVMRustDisposeTargetMachine(tm);
 
-        let llvm_data_layout = llvm::LLVMGetDataLayout(llmod);
+        let llvm_data_layout = llvm::LLVMGetDataLayoutStr(llmod);
         let llvm_data_layout = str::from_utf8(CStr::from_ptr(llvm_data_layout).to_bytes())
             .expect("got a non-UTF8 data-layout from LLVM");
 
@@ -458,7 +455,7 @@ impl CodegenCx<'b, 'tcx> {
             self.type_variadic_func(&[], ret)
         };
         let f = self.declare_cfn(name, fn_ty);
-        llvm::SetUnnamedAddr(f, false);
+        llvm::SetUnnamedAddress(f, llvm::UnnamedAddr::No);
         self.intrinsics.borrow_mut().insert(name, f);
         f
     }
@@ -800,7 +797,7 @@ impl CodegenCx<'b, 'tcx> {
             ifn!("llvm.dbg.declare", fn(self.type_metadata(), self.type_metadata()) -> void);
             ifn!("llvm.dbg.value", fn(self.type_metadata(), t_i64, self.type_metadata()) -> void);
         }
-        return None;
+        None
     }
 }
 

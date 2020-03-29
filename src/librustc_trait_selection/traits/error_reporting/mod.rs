@@ -481,12 +481,11 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
                     }
 
                     ty::Predicate::ClosureKind(closure_def_id, closure_substs, kind) => {
-                        let found_kind = self.closure_kind(closure_def_id, closure_substs).unwrap();
-                        let closure_span = self
-                            .tcx
-                            .sess
-                            .source_map()
-                            .def_span(self.tcx.hir().span_if_local(closure_def_id).unwrap());
+                        let found_kind = self.closure_kind(closure_substs).unwrap();
+                        let closure_span =
+                            self.tcx.sess.source_map().guess_head_span(
+                                self.tcx.hir().span_if_local(closure_def_id).unwrap(),
+                            );
                         let hir_id = self.tcx.hir().as_local_hir_id(closure_def_id).unwrap();
                         let mut err = struct_span_err!(
                             self.tcx.sess,
@@ -580,7 +579,7 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
 
                 let found_span = found_did
                     .and_then(|did| self.tcx.hir().span_if_local(did))
-                    .map(|sp| self.tcx.sess.source_map().def_span(sp)); // the sp could be an fn def
+                    .map(|sp| self.tcx.sess.source_map().guess_head_span(sp)); // the sp could be an fn def
 
                 if self.reported_closure_mismatch.borrow().contains(&(span, found_span)) {
                     // We check closures twice, with obligations flowing in different directions,
@@ -680,7 +679,7 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
                 kind: hir::ExprKind::Closure(_, ref _decl, id, span, _),
                 ..
             }) => (
-                self.tcx.sess.source_map().def_span(span),
+                self.tcx.sess.source_map().guess_head_span(span),
                 self.tcx
                     .hir()
                     .body(id)
@@ -723,7 +722,7 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
                 kind: hir::TraitItemKind::Fn(ref sig, _),
                 ..
             }) => (
-                self.tcx.sess.source_map().def_span(span),
+                self.tcx.sess.source_map().guess_head_span(span),
                 sig.decl
                     .inputs
                     .iter()
@@ -741,7 +740,7 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
                     .ctor_hir_id()
                     .map(|hir_id| self.tcx.hir().span(hir_id))
                     .unwrap_or(DUMMY_SP);
-                let span = self.tcx.sess.source_map().def_span(span);
+                let span = self.tcx.sess.source_map().guess_head_span(span);
 
                 (span, vec![ArgKind::empty(); variant_data.fields().len()])
             }
@@ -815,11 +814,11 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
             // For example, if `expected_args_length` is 2, suggest `|_, _|`.
             if found_args.is_empty() && is_closure {
                 let underscores = vec!["_"; expected_args.len()].join(", ");
-                err.span_suggestion(
+                err.span_suggestion_verbose(
                     pipe_span,
                     &format!(
                         "consider changing the closure to take and ignore the expected argument{}",
-                        if expected_args.len() < 2 { "" } else { "s" }
+                        pluralize!(expected_args.len())
                     ),
                     format!("|{}|", underscores),
                     Applicability::MachineApplicable,
@@ -833,7 +832,7 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
                         .map(|(name, _)| name.to_owned())
                         .collect::<Vec<String>>()
                         .join(", ");
-                    err.span_suggestion(
+                    err.span_suggestion_verbose(
                         found_span,
                         "change the closure to take multiple arguments instead of a single tuple",
                         format!("|{}|", sugg),
@@ -870,7 +869,7 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
                             String::new()
                         },
                     );
-                    err.span_suggestion(
+                    err.span_suggestion_verbose(
                         found_span,
                         "change the closure to accept a tuple instead of individual arguments",
                         sugg,
@@ -1420,15 +1419,14 @@ impl<'a, 'tcx> InferCtxtPrivExt<'tcx> for InferCtxt<'a, 'tcx> {
                         //    |
                         //    = note: cannot resolve `_: Tt`
 
-                        err.span_suggestion(
-                            span,
+                        err.span_suggestion_verbose(
+                            span.shrink_to_hi(),
                             &format!(
                                 "consider specifying the type argument{} in the function call",
-                                if generics.params.len() > 1 { "s" } else { "" },
+                                pluralize!(generics.params.len()),
                             ),
                             format!(
-                                "{}::<{}>",
-                                snippet,
+                                "::<{}>",
                                 generics
                                     .params
                                     .iter()
@@ -1583,14 +1581,15 @@ impl<'a, 'tcx> InferCtxtPrivExt<'tcx> for InferCtxt<'a, 'tcx> {
                 for param in generics.params {
                     if param.span == *span
                         && !param.bounds.iter().any(|bound| {
-                            bound.trait_def_id() == self.tcx.lang_items().sized_trait()
+                            bound.trait_ref().and_then(|trait_ref| trait_ref.trait_def_id())
+                                == self.tcx.lang_items().sized_trait()
                         })
                     {
                         let (span, separator) = match param.bounds {
                             [] => (span.shrink_to_hi(), ":"),
                             [.., bound] => (bound.span().shrink_to_hi(), " + "),
                         };
-                        err.span_suggestion(
+                        err.span_suggestion_verbose(
                             span,
                             "consider relaxing the implicit `Sized` restriction",
                             format!("{} ?Sized", separator),
@@ -1625,7 +1624,7 @@ pub fn recursive_type_with_infinite_size_error(
 ) -> DiagnosticBuilder<'tcx> {
     assert!(type_def_id.is_local());
     let span = tcx.hir().span_if_local(type_def_id).unwrap();
-    let span = tcx.sess.source_map().def_span(span);
+    let span = tcx.sess.source_map().guess_head_span(span);
     let mut err = struct_span_err!(
         tcx.sess,
         span,

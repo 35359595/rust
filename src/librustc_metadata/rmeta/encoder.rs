@@ -2,7 +2,6 @@ use crate::rmeta::table::FixedSizeEncoding;
 use crate::rmeta::*;
 
 use log::{debug, trace};
-use rustc::hir::map::definitions::DefPathTable;
 use rustc::hir::map::Map;
 use rustc::middle::cstore::{EncodedMetadata, ForeignModule, LinkagePreference, NativeLibrary};
 use rustc::middle::dependency_format::Linkage;
@@ -13,23 +12,25 @@ use rustc::traits::specialization_graph;
 use rustc::ty::codec::{self as ty_codec, TyEncoder};
 use rustc::ty::layout::VariantIdx;
 use rustc::ty::{self, SymbolName, Ty, TyCtxt};
-use rustc_ast::ast;
+use rustc_ast::ast::{self, Ident};
 use rustc_ast::attr;
 use rustc_data_structures::fingerprint::Fingerprint;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::stable_hasher::StableHasher;
-use rustc_data_structures::sync::Lrc;
+use rustc_data_structures::sync::{join, Lrc};
 use rustc_hir as hir;
 use rustc_hir::def::CtorKind;
+use rustc_hir::def_id::DefIdSet;
 use rustc_hir::def_id::{CrateNum, DefId, DefIndex, LocalDefId, CRATE_DEF_INDEX, LOCAL_CRATE};
+use rustc_hir::definitions::DefPathTable;
 use rustc_hir::intravisit::{self, NestedVisitorMap, Visitor};
-use rustc_hir::itemlikevisit::ItemLikeVisitor;
+use rustc_hir::itemlikevisit::{ItemLikeVisitor, ParItemLikeVisitor};
 use rustc_hir::{AnonConst, GenericParamKind};
 use rustc_index::vec::Idx;
 use rustc_serialize::{opaque, Encodable, Encoder, SpecializedEncoder};
 use rustc_session::config::{self, CrateType};
 use rustc_span::source_map::Spanned;
-use rustc_span::symbol::{kw, sym, Ident, Symbol};
+use rustc_span::symbol::{kw, sym, Symbol};
 use rustc_span::{self, ExternalSource, FileName, SourceFile, Span};
 use std::hash::Hash;
 use std::num::NonZeroUsize;
@@ -216,13 +217,6 @@ impl<'tcx> SpecializedEncoder<Span> for EncodeContext<'tcx> {
         Ok(())
 
         // Don't encode the expansion context.
-    }
-}
-
-impl SpecializedEncoder<Ident> for EncodeContext<'tcx> {
-    fn specialized_encode(&mut self, ident: &Ident) -> Result<(), Self::Error> {
-        // FIXME(jseyfried): intercrate hygiene
-        ident.name.encode(self)
     }
 }
 
@@ -467,12 +461,6 @@ impl<'tcx> EncodeContext<'tcx> {
         let impls = self.encode_impls();
         let impl_bytes = self.position() - i;
 
-        // Encode exported symbols info.
-        i = self.position();
-        let exported_symbols = self.tcx.exported_symbols(LOCAL_CRATE);
-        let exported_symbols = self.encode_exported_symbols(&exported_symbols);
-        let exported_symbols_bytes = self.position() - i;
-
         let tcx = self.tcx;
 
         // Encode the items.
@@ -512,6 +500,13 @@ impl<'tcx> EncodeContext<'tcx> {
         i = self.position();
         let proc_macro_data = self.encode_proc_macros();
         let proc_macro_data_bytes = self.position() - i;
+
+        // Encode exported symbols info. This is prefetched in `encode_metadata` so we encode
+        // this last to give the prefetching as much time as possible to complete.
+        i = self.position();
+        let exported_symbols = self.tcx.exported_symbols(LOCAL_CRATE);
+        let exported_symbols = self.encode_exported_symbols(&exported_symbols);
+        let exported_symbols_bytes = self.position() - i;
 
         let attrs = tcx.hir().krate_attrs();
         let has_default_lib_allocator = attr::contains_name(&attrs, sym::default_lib_allocator);
@@ -631,6 +626,7 @@ impl EncodeContext<'tcx> {
             assert!(f.did.is_local());
             f.did.index
         }));
+        self.encode_ident_span(def_id, variant.ident);
         self.encode_stability(def_id);
         self.encode_deprecation(def_id);
         self.encode_item_type(def_id);
@@ -733,6 +729,7 @@ impl EncodeContext<'tcx> {
         record!(self.per_def.visibility[def_id] <- field.vis);
         record!(self.per_def.span[def_id] <- self.tcx.def_span(def_id));
         record!(self.per_def.attributes[def_id] <- variant_data.fields()[field_index].attrs);
+        self.encode_ident_span(def_id, field.ident);
         self.encode_stability(def_id);
         self.encode_deprecation(def_id);
         self.encode_item_type(def_id);
@@ -827,8 +824,10 @@ impl EncodeContext<'tcx> {
 
         record!(self.per_def.kind[def_id] <- match trait_item.kind {
             ty::AssocKind::Const => {
-                let rendered =
-                    hir::print::to_string(&self.tcx.hir(), |s| s.print_trait_item(ast_item));
+                let rendered = rustc_hir_pretty::to_string(
+                    &(&self.tcx.hir() as &dyn intravisit::Map<'_>),
+                    |s| s.print_trait_item(ast_item)
+                );
                 let rendered_const = self.lazy(RenderedConst(rendered));
 
                 EntryKind::AssocConst(
@@ -867,6 +866,7 @@ impl EncodeContext<'tcx> {
         record!(self.per_def.visibility[def_id] <- trait_item.vis);
         record!(self.per_def.span[def_id] <- ast_item.span);
         record!(self.per_def.attributes[def_id] <- ast_item.attrs);
+        self.encode_ident_span(def_id, ast_item.ident);
         self.encode_stability(def_id);
         self.encode_const_stability(def_id);
         self.encode_deprecation(def_id);
@@ -888,6 +888,8 @@ impl EncodeContext<'tcx> {
         self.encode_generics(def_id);
         self.encode_explicit_predicates(def_id);
         self.encode_inferred_outlives(def_id);
+
+        // This should be kept in sync with `PrefetchVisitor.visit_trait_item`.
         self.encode_optimized_mir(def_id);
         self.encode_promoted_mir(def_id);
     }
@@ -948,6 +950,7 @@ impl EncodeContext<'tcx> {
         record!(self.per_def.visibility[def_id] <- impl_item.vis);
         record!(self.per_def.span[def_id] <- ast_item.span);
         record!(self.per_def.attributes[def_id] <- ast_item.attrs);
+        self.encode_ident_span(def_id, impl_item.ident);
         self.encode_stability(def_id);
         self.encode_const_stability(def_id);
         self.encode_deprecation(def_id);
@@ -959,6 +962,9 @@ impl EncodeContext<'tcx> {
         self.encode_generics(def_id);
         self.encode_explicit_predicates(def_id);
         self.encode_inferred_outlives(def_id);
+
+        // The following part should be kept in sync with `PrefetchVisitor.visit_impl_item`.
+
         let mir = match ast_item.kind {
             hir::ImplItemKind::Const(..) => true,
             hir::ImplItemKind::Fn(ref sig, _) => {
@@ -1040,8 +1046,11 @@ impl EncodeContext<'tcx> {
     }
 
     fn encode_rendered_const_for_body(&mut self, body_id: hir::BodyId) -> Lazy<RenderedConst> {
-        let body = self.tcx.hir().body(body_id);
-        let rendered = hir::print::to_string(&self.tcx.hir(), |s| s.print_expr(&body.value));
+        let hir = self.tcx.hir();
+        let body = hir.body(body_id);
+        let rendered = rustc_hir_pretty::to_string(&(&hir as &dyn intravisit::Map<'_>), |s| {
+            s.print_expr(&body.value)
+        });
         let rendered_const = &RenderedConst(rendered);
         self.lazy(rendered_const)
     }
@@ -1050,6 +1059,8 @@ impl EncodeContext<'tcx> {
         let tcx = self.tcx;
 
         debug!("EncodeContext::encode_info_for_item({:?})", def_id);
+
+        self.encode_ident_span(def_id, item.ident);
 
         record!(self.per_def.kind[def_id] <- match item.kind {
             hir::ItemKind::Static(_, hir::Mutability::Mut, _) => EntryKind::MutStatic,
@@ -1250,6 +1261,8 @@ impl EncodeContext<'tcx> {
             _ => {}
         }
 
+        // The following part should be kept in sync with `PrefetchVisitor.visit_item`.
+
         let mir = match item.kind {
             hir::ItemKind::Static(..) | hir::ItemKind::Const(..) => true,
             hir::ItemKind::Fn(ref sig, ..) => {
@@ -1275,6 +1288,7 @@ impl EncodeContext<'tcx> {
         record!(self.per_def.visibility[def_id] <- ty::Visibility::Public);
         record!(self.per_def.span[def_id] <- macro_def.span);
         record!(self.per_def.attributes[def_id] <- macro_def.attrs);
+        self.encode_ident_span(def_id, macro_def.ident);
         self.encode_stability(def_id);
         self.encode_deprecation(def_id);
     }
@@ -1311,7 +1325,7 @@ impl EncodeContext<'tcx> {
         record!(self.per_def.attributes[def_id] <- &self.tcx.get_attrs(def_id)[..]);
         self.encode_item_type(def_id);
         if let ty::Closure(def_id, substs) = ty.kind {
-            record!(self.per_def.fn_sig[def_id] <- substs.as_closure().sig(def_id, self.tcx));
+            record!(self.per_def.fn_sig[def_id] <- substs.as_closure().sig());
         }
         self.encode_generics(def_id);
         self.encode_optimized_mir(def_id);
@@ -1519,6 +1533,7 @@ impl EncodeContext<'tcx> {
             ty::Visibility::from_hir(&nitem.vis, nitem.hir_id, self.tcx));
         record!(self.per_def.span[def_id] <- nitem.span);
         record!(self.per_def.attributes[def_id] <- nitem.attrs);
+        self.encode_ident_span(def_id, nitem.ident);
         self.encode_stability(def_id);
         self.encode_const_stability(def_id);
         self.encode_deprecation(def_id);
@@ -1613,6 +1628,10 @@ impl EncodeContext<'tcx> {
         }
     }
 
+    fn encode_ident_span(&mut self, def_id: DefId, ident: Ident) {
+        record!(self.per_def.ident_span[def_id] <- ident.span);
+    }
+
     /// In some cases, along with the item itself, we also
     /// encode some sub-items. Usually we want some info from the item
     /// so it's easier to do that here then to wait until we would encounter
@@ -1697,6 +1716,70 @@ impl<'tcx, 'v> ItemLikeVisitor<'v> for ImplVisitor<'tcx> {
     }
 }
 
+/// Used to prefetch queries which will be needed later by metadata encoding.
+/// Only a subset of the queries are actually prefetched to keep this code smaller.
+struct PrefetchVisitor<'tcx> {
+    tcx: TyCtxt<'tcx>,
+    mir_keys: &'tcx DefIdSet,
+}
+
+impl<'tcx> PrefetchVisitor<'tcx> {
+    fn prefetch_mir(&self, def_id: DefId) {
+        if self.mir_keys.contains(&def_id) {
+            self.tcx.optimized_mir(def_id);
+            self.tcx.promoted_mir(def_id);
+        }
+    }
+}
+
+impl<'tcx, 'v> ParItemLikeVisitor<'v> for PrefetchVisitor<'tcx> {
+    fn visit_item(&self, item: &hir::Item<'_>) {
+        // This should be kept in sync with `encode_info_for_item`.
+        let tcx = self.tcx;
+        match item.kind {
+            hir::ItemKind::Static(..) | hir::ItemKind::Const(..) => {
+                self.prefetch_mir(tcx.hir().local_def_id(item.hir_id))
+            }
+            hir::ItemKind::Fn(ref sig, ..) => {
+                let def_id = tcx.hir().local_def_id(item.hir_id);
+                let generics = tcx.generics_of(def_id);
+                let needs_inline = generics.requires_monomorphization(tcx)
+                    || tcx.codegen_fn_attrs(def_id).requests_inline();
+                if needs_inline || sig.header.constness == hir::Constness::Const {
+                    self.prefetch_mir(def_id)
+                }
+            }
+            _ => (),
+        }
+    }
+
+    fn visit_trait_item(&self, trait_item: &'v hir::TraitItem<'v>) {
+        // This should be kept in sync with `encode_info_for_trait_item`.
+        self.prefetch_mir(self.tcx.hir().local_def_id(trait_item.hir_id));
+    }
+
+    fn visit_impl_item(&self, impl_item: &'v hir::ImplItem<'v>) {
+        // This should be kept in sync with `encode_info_for_impl_item`.
+        let tcx = self.tcx;
+        match impl_item.kind {
+            hir::ImplItemKind::Const(..) => {
+                self.prefetch_mir(tcx.hir().local_def_id(impl_item.hir_id))
+            }
+            hir::ImplItemKind::Fn(ref sig, _) => {
+                let def_id = tcx.hir().local_def_id(impl_item.hir_id);
+                let generics = tcx.generics_of(def_id);
+                let needs_inline = generics.requires_monomorphization(tcx)
+                    || tcx.codegen_fn_attrs(def_id).requests_inline();
+                let is_const_fn = sig.header.constness == hir::Constness::Const;
+                if needs_inline || is_const_fn {
+                    self.prefetch_mir(def_id)
+                }
+            }
+            hir::ImplItemKind::OpaqueTy(..) | hir::ImplItemKind::TyAlias(..) => (),
+        }
+    }
+}
+
 // NOTE(eddyb) The following comment was preserved for posterity, even
 // though it's no longer relevant as EBML (which uses nested & tagged
 // "documents") was replaced with a scheme that can't go out of bounds.
@@ -1721,35 +1804,64 @@ impl<'tcx, 'v> ItemLikeVisitor<'v> for ImplVisitor<'tcx> {
 // generated regardless of trailing bytes that end up in it.
 
 pub(super) fn encode_metadata(tcx: TyCtxt<'_>) -> EncodedMetadata {
+    // Since encoding metadata is not in a query, and nothing is cached,
+    // there's no need to do dep-graph tracking for any of it.
+    tcx.dep_graph.assert_ignored();
+
+    join(
+        || encode_metadata_impl(tcx),
+        || {
+            if tcx.sess.threads() == 1 {
+                return;
+            }
+            // Prefetch some queries used by metadata encoding.
+            // This is not necessary for correctness, but is only done for performance reasons.
+            // It can be removed if it turns out to cause trouble or be detrimental to performance.
+            join(
+                || {
+                    if !tcx.sess.opts.output_types.should_codegen() {
+                        // We won't emit MIR, so don't prefetch it.
+                        return;
+                    }
+                    tcx.hir().krate().par_visit_all_item_likes(&PrefetchVisitor {
+                        tcx,
+                        mir_keys: tcx.mir_keys(LOCAL_CRATE),
+                    });
+                },
+                || tcx.exported_symbols(LOCAL_CRATE),
+            );
+        },
+    )
+    .0
+}
+
+fn encode_metadata_impl(tcx: TyCtxt<'_>) -> EncodedMetadata {
     let mut encoder = opaque::Encoder::new(vec![]);
     encoder.emit_raw_bytes(METADATA_HEADER);
 
     // Will be filled with the root position after encoding everything.
     encoder.emit_raw_bytes(&[0, 0, 0, 0]);
 
-    // Since encoding metadata is not in a query, and nothing is cached,
-    // there's no need to do dep-graph tracking for any of it.
-    let (root, mut result) = tcx.dep_graph.with_ignore(move || {
-        let mut ecx = EncodeContext {
-            opaque: encoder,
-            tcx,
-            per_def: Default::default(),
-            lazy_state: LazyState::NoNode,
-            type_shorthands: Default::default(),
-            predicate_shorthands: Default::default(),
-            source_file_cache: tcx.sess.source_map().files()[0].clone(),
-            interpret_allocs: Default::default(),
-            interpret_allocs_inverse: Default::default(),
-        };
+    let mut ecx = EncodeContext {
+        opaque: encoder,
+        tcx,
+        per_def: Default::default(),
+        lazy_state: LazyState::NoNode,
+        type_shorthands: Default::default(),
+        predicate_shorthands: Default::default(),
+        source_file_cache: tcx.sess.source_map().files()[0].clone(),
+        interpret_allocs: Default::default(),
+        interpret_allocs_inverse: Default::default(),
+    };
 
-        // Encode the rustc version string in a predictable location.
-        rustc_version().encode(&mut ecx).unwrap();
+    // Encode the rustc version string in a predictable location.
+    rustc_version().encode(&mut ecx).unwrap();
 
-        // Encode all the entries and extra information in the crate,
-        // culminating in the `CrateRoot` which points to all of it.
-        let root = ecx.encode_crate_root();
-        (root, ecx.opaque.into_inner())
-    });
+    // Encode all the entries and extra information in the crate,
+    // culminating in the `CrateRoot` which points to all of it.
+    let root = ecx.encode_crate_root();
+
+    let mut result = ecx.opaque.into_inner();
 
     // Encode the root position.
     let header = METADATA_HEADER.len();

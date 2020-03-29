@@ -6,6 +6,7 @@ use rustc_hir::def_id::CrateNum;
 use rustc_session::config::{
     self, CFGuard, DebugInfo, OutputFilenames, OutputType, PrintRequest, Sanitizer,
 };
+use rustc_session::output::{check_file_is_writeable, invalid_output_for_target, out_filename};
 use rustc_session::search_paths::PathKind;
 /// For all the linkers we support, and information they might
 /// need out of the shared crate context before we get rid of it.
@@ -35,8 +36,6 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Output, Stdio};
 use std::str;
-
-pub use rustc_codegen_utils::link::*;
 
 pub fn remove(sess: &Session, path: &Path) {
     if let Err(e) = fs::remove_file(path) {
@@ -839,7 +838,19 @@ pub fn linker_and_flavor(sess: &Session) -> (PathBuf, LinkerFlavor) {
                             "emcc"
                         }
                     }
-                    LinkerFlavor::Gcc => "cc",
+                    LinkerFlavor::Gcc => {
+                        if cfg!(target_os = "solaris") {
+                            // On historical Solaris systems, "cc" may have
+                            // been Sun Studio, which is not flag-compatible
+                            // with "gcc".  This history casts a long shadow,
+                            // and many modern illumos distributions today
+                            // ship GCC as "gcc" without also making it
+                            // available as "cc".
+                            "gcc"
+                        } else {
+                            "cc"
+                        }
+                    }
                     LinkerFlavor::Ld => "ld",
                     LinkerFlavor::Msvc => "link.exe",
                     LinkerFlavor::Lld(_) => "lld",
@@ -1380,10 +1391,17 @@ fn link_args<'a, B: ArchiveBuilder<'a>>(
     // link line. And finally upstream native libraries can't depend on anything
     // in this DAG so far because they're only dylibs and dylibs can only depend
     // on other dylibs (e.g., other native deps).
-    add_local_native_libraries(cmd, sess, codegen_results);
+    //
+    // If -Zlink-native-libraries=false is set, then the assumption is that an
+    // external build system already has the native dependencies defined, and it
+    // will provide them to the linker itself.
+    if sess.opts.debugging_opts.link_native_libraries.unwrap_or(true) {
+        add_local_native_libraries(cmd, sess, codegen_results);
+    }
     add_upstream_rust_crates::<B>(cmd, sess, codegen_results, crate_type, tmpdir);
-    add_upstream_native_libraries(cmd, sess, codegen_results, crate_type);
-
+    if sess.opts.debugging_opts.link_native_libraries.unwrap_or(true) {
+        add_upstream_native_libraries(cmd, sess, codegen_results, crate_type);
+    }
     // Tell the linker what we're doing.
     if crate_type != config::CrateType::Executable {
         cmd.build_dylib(out_filename);

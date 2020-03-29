@@ -1,3 +1,4 @@
+// ignore-tidy-filelength
 //! A contiguous growable array type with heap-allocated contents, written
 //! `Vec<T>`.
 //!
@@ -1377,6 +1378,7 @@ impl<T> Vec<T> {
     /// assert_eq!(vec2, [2, 3]);
     /// ```
     #[inline]
+    #[must_use = "use `.truncate()` if you don't need the other half"]
     #[stable(feature = "split_off", since = "1.4.0")]
     pub fn split_off(&mut self, at: usize) -> Self {
         assert!(at <= self.len(), "`at` out of bounds");
@@ -2394,6 +2396,21 @@ impl<T: Clone> From<&mut [T]> for Vec<T> {
     #[cfg(test)]
     fn from(s: &mut [T]) -> Vec<T> {
         crate::slice::to_vec(s)
+    }
+}
+
+#[stable(feature = "vec_from_array", since = "1.44.0")]
+impl<T, const N: usize> From<[T; N]> for Vec<T>
+where
+    [T; N]: LengthAtMost32,
+{
+    #[cfg(not(test))]
+    fn from(s: [T; N]) -> Vec<T> {
+        <[T]>::into_vec(box s)
+    }
+    #[cfg(test)]
+    fn from(s: [T; N]) -> Vec<T> {
+        crate::slice::into_vec(box s)
     }
 }
 

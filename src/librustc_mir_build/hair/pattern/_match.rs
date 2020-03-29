@@ -1619,12 +1619,17 @@ impl<'tcx> fmt::Debug for MissingConstructors<'tcx> {
 /// relation to preceding patterns, it is not reachable) and exhaustiveness
 /// checking (if a wildcard pattern is useful in relation to a matrix, the
 /// matrix isn't exhaustive).
+///
+/// `is_under_guard` is used to inform if the pattern has a guard. If it
+/// has one it must not be inserted into the matrix. This shouldn't be
+/// relied on for soundness.
 crate fn is_useful<'p, 'tcx>(
     cx: &mut MatchCheckCtxt<'p, 'tcx>,
     matrix: &Matrix<'p, 'tcx>,
     v: &PatStack<'p, 'tcx>,
     witness_preference: WitnessPreference,
     hir_id: HirId,
+    is_under_guard: bool,
     is_top_level: bool,
 ) -> Usefulness<'tcx, 'p> {
     let &Matrix(ref rows) = matrix;
@@ -1653,7 +1658,7 @@ crate fn is_useful<'p, 'tcx>(
         let mut unreachable_pats = Vec::new();
         let mut any_is_useful = false;
         for v in vs {
-            let res = is_useful(cx, &matrix, &v, witness_preference, hir_id, false);
+            let res = is_useful(cx, &matrix, &v, witness_preference, hir_id, is_under_guard, false);
             match res {
                 Useful(pats) => {
                     any_is_useful = true;
@@ -1664,7 +1669,10 @@ crate fn is_useful<'p, 'tcx>(
                     bug!("Encountered or-pat in `v` during exhaustiveness checking")
                 }
             }
-            matrix.push(v);
+            // If pattern has a guard don't add it to the matrix
+            if !is_under_guard {
+                matrix.push(v);
+            }
         }
         return if any_is_useful { Useful(unreachable_pats) } else { NotUseful };
     }
@@ -1712,7 +1720,18 @@ crate fn is_useful<'p, 'tcx>(
             Some(hir_id),
         )
         .into_iter()
-        .map(|c| is_useful_specialized(cx, matrix, v, c, pcx.ty, witness_preference, hir_id))
+        .map(|c| {
+            is_useful_specialized(
+                cx,
+                matrix,
+                v,
+                c,
+                pcx.ty,
+                witness_preference,
+                hir_id,
+                is_under_guard,
+            )
+        })
         .find(|result| result.is_useful())
         .unwrap_or(NotUseful)
     } else {
@@ -1746,14 +1765,24 @@ crate fn is_useful<'p, 'tcx>(
             split_grouped_constructors(cx.tcx, cx.param_env, pcx, all_ctors, matrix, DUMMY_SP, None)
                 .into_iter()
                 .map(|c| {
-                    is_useful_specialized(cx, matrix, v, c, pcx.ty, witness_preference, hir_id)
+                    is_useful_specialized(
+                        cx,
+                        matrix,
+                        v,
+                        c,
+                        pcx.ty,
+                        witness_preference,
+                        hir_id,
+                        is_under_guard,
+                    )
                 })
                 .find(|result| result.is_useful())
                 .unwrap_or(NotUseful)
         } else {
             let matrix = matrix.specialize_wildcard();
             let v = v.to_tail();
-            let usefulness = is_useful(cx, &matrix, &v, witness_preference, hir_id, false);
+            let usefulness =
+                is_useful(cx, &matrix, &v, witness_preference, hir_id, is_under_guard, false);
 
             // In this case, there's at least one "free"
             // constructor that is only matched against by
@@ -1810,6 +1839,7 @@ fn is_useful_specialized<'p, 'tcx>(
     lty: Ty<'tcx>,
     witness_preference: WitnessPreference,
     hir_id: HirId,
+    is_under_guard: bool,
 ) -> Usefulness<'tcx, 'p> {
     debug!("is_useful_specialized({:#?}, {:#?}, {:?})", v, ctor, lty);
 
@@ -1817,7 +1847,7 @@ fn is_useful_specialized<'p, 'tcx>(
         cx.pattern_arena.alloc_from_iter(ctor.wildcard_subpatterns(cx, lty));
     let matrix = matrix.specialize_constructor(cx, &ctor, ctor_wild_subpatterns);
     v.specialize_constructor(cx, &ctor, ctor_wild_subpatterns)
-        .map(|v| is_useful(cx, &matrix, &v, witness_preference, hir_id, false))
+        .map(|v| is_useful(cx, &matrix, &v, witness_preference, hir_id, is_under_guard, false))
         .map(|u| u.apply_constructor(cx, &ctor, lty))
         .unwrap_or(NotUseful)
 }
@@ -1920,8 +1950,8 @@ fn slice_pat_covered_by_const<'tcx>(
         }
         (ConstValue::Slice { data, start, end }, ty::Slice(t)) => {
             assert_eq!(*t, tcx.types.u8);
-            let ptr = Pointer::new(AllocId(0), Size::from_bytes(start as u64));
-            data.get_bytes(&tcx, ptr, Size::from_bytes((end - start) as u64)).unwrap()
+            let ptr = Pointer::new(AllocId(0), Size::from_bytes(start));
+            data.get_bytes(&tcx, ptr, Size::from_bytes(end - start)).unwrap()
         }
         // FIXME(oli-obk): create a way to extract fat pointers from ByRef
         (_, ty::Slice(_)) => return Ok(false),
@@ -2066,7 +2096,7 @@ fn split_grouped_constructors<'p, 'tcx>(
                         }
                         intersection
                     })
-                    .flat_map(|range| range_borders(range));
+                    .flat_map(range_borders);
                 let ctor_borders = range_borders(ctor_range.clone());
                 let mut borders: Vec<_> = row_borders.chain(ctor_borders).collect();
                 borders.sort_unstable();
@@ -2375,7 +2405,7 @@ fn specialize_one_pattern<'p, 'tcx>(
                 ty::Slice(t) => {
                     match value.val {
                         ty::ConstKind::Value(ConstValue::Slice { data, start, end }) => {
-                            let offset = Size::from_bytes(start as u64);
+                            let offset = Size::from_bytes(start);
                             let n = (end - start) as u64;
                             (Cow::Borrowed(data), offset, n, t)
                         }

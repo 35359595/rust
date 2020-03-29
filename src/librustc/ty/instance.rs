@@ -166,7 +166,7 @@ impl<'tcx> InstanceDef<'tcx> {
     /// Note that this is only a hint. See the documentation for
     /// `generates_cgu_internal_copy` for more information.
     pub fn requires_inline(&self, tcx: TyCtxt<'tcx>) -> bool {
-        use crate::hir::map::DefPathData;
+        use rustc_hir::definitions::DefPathData;
         let def_id = match *self {
             ty::InstanceDef::Item(def_id) => def_id,
             ty::InstanceDef::DropGlue(_, Some(_)) => return false,
@@ -341,7 +341,7 @@ impl<'tcx> Instance<'tcx> {
         substs: ty::SubstsRef<'tcx>,
         requested_kind: ty::ClosureKind,
     ) -> Instance<'tcx> {
-        let actual_kind = substs.as_closure().kind(def_id, tcx);
+        let actual_kind = substs.as_closure().kind();
 
         match needs_fn_once_adapter_shim(actual_kind, requested_kind) {
             Ok(true) => Instance::fn_once_adapter_instance(tcx, def_id, substs),
@@ -372,7 +372,7 @@ impl<'tcx> Instance<'tcx> {
 
         let self_ty = tcx.mk_closure(closure_did, substs);
 
-        let sig = substs.as_closure().sig(closure_did, tcx);
+        let sig = substs.as_closure().sig();
         let sig = tcx.normalize_erasing_late_bound_regions(ty::ParamEnv::reveal_all(), &sig);
         assert_eq!(sig.inputs().len(), 1);
         let substs = tcx.mk_substs_trait(self_ty, &[sig.inputs()[0].into()]);
@@ -381,8 +381,30 @@ impl<'tcx> Instance<'tcx> {
         Instance { def, substs }
     }
 
-    pub fn is_vtable_shim(&self) -> bool {
-        if let InstanceDef::VtableShim(..) = self.def { true } else { false }
+    /// FIXME(#69925) Depending on the kind of `InstanceDef`, the MIR body associated with an
+    /// instance is expressed in terms of the generic parameters of `self.def_id()`, and in other
+    /// cases the MIR body is expressed in terms of the types found in the substitution array.
+    /// In the former case, we want to substitute those generic types and replace them with the
+    /// values from the substs when monomorphizing the function body. But in the latter case, we
+    /// don't want to do that substitution, since it has already been done effectively.
+    ///
+    /// This function returns `Some(substs)` in the former case and None otherwise -- i.e., if
+    /// this function returns `None`, then the MIR body does not require substitution during
+    /// monomorphization.
+    pub fn substs_for_mir_body(&self) -> Option<SubstsRef<'tcx>> {
+        match self.def {
+            InstanceDef::CloneShim(..)
+            | InstanceDef::DropGlue(_, Some(_)) => None,
+            InstanceDef::ClosureOnceShim { .. }
+            | InstanceDef::DropGlue(..)
+            // FIXME(#69925): `FnPtrShim` should be in the other branch.
+            | InstanceDef::FnPtrShim(..)
+            | InstanceDef::Item(_)
+            | InstanceDef::Intrinsic(..)
+            | InstanceDef::ReifyShim(..)
+            | InstanceDef::Virtual(..)
+            | InstanceDef::VtableShim(..) => Some(self.substs),
+        }
     }
 }
 

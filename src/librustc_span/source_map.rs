@@ -368,16 +368,16 @@ impl SourceMap {
 
     // If there is a doctest offset, applies it to the line.
     pub fn doctest_offset_line(&self, file: &FileName, orig: usize) -> usize {
-        return match file {
+        match file {
             FileName::DocTest(_, offset) => {
-                return if *offset >= 0 {
-                    orig + *offset as usize
-                } else {
+                if *offset < 0 {
                     orig - (-(*offset)) as usize
-                };
+                } else {
+                    orig + *offset as usize
+                }
             }
             _ => orig,
-        };
+        }
     }
 
     /// Looks up source information about a `BytePos`.
@@ -535,6 +535,10 @@ impl SourceMap {
         let (lo, hi) = self.is_valid_span(sp)?;
         assert!(hi.line >= lo.line);
 
+        if sp.is_dummy() {
+            return Ok(FileLines { file: lo.file, lines: Vec::new() });
+        }
+
         let mut lines = Vec::with_capacity(hi.line - lo.line + 1);
 
         // The span starts partway through the first line,
@@ -545,6 +549,9 @@ impl SourceMap {
         // and to the end of the line. Be careful because the line
         // numbers in Loc are 1-based, so we subtract 1 to get 0-based
         // lines.
+        //
+        // FIXME: now that we handle DUMMY_SP up above, we should consider
+        // asserting that the line numbers here are all indeed 1-based.
         let hi_line = hi.line.saturating_sub(1);
         for line_index in lo.line.saturating_sub(1)..hi_line {
             let line_len = lo.file.get_line(line_index).map(|s| s.chars().count()).unwrap_or(0);
@@ -569,10 +576,10 @@ impl SourceMap {
         let local_end = self.lookup_byte_offset(sp.hi());
 
         if local_begin.sf.start_pos != local_end.sf.start_pos {
-            return Err(SpanSnippetError::DistinctSources(DistinctSources {
+            Err(SpanSnippetError::DistinctSources(DistinctSources {
                 begin: (local_begin.sf.name.clone(), local_begin.sf.start_pos),
                 end: (local_end.sf.name.clone(), local_end.sf.start_pos),
-            }));
+            }))
         } else {
             self.ensure_source_file_source_present(local_begin.sf.clone());
 
@@ -590,13 +597,11 @@ impl SourceMap {
             }
 
             if let Some(ref src) = local_begin.sf.src {
-                return extract_source(src, start_index, end_index);
+                extract_source(src, start_index, end_index)
             } else if let Some(src) = local_begin.sf.external_src.borrow().get_source() {
-                return extract_source(src, start_index, end_index);
+                extract_source(src, start_index, end_index)
             } else {
-                return Err(SpanSnippetError::SourceNotAvailable {
-                    filename: local_begin.sf.name.clone(),
-                });
+                Err(SpanSnippetError::SourceNotAvailable { filename: local_begin.sf.name.clone() })
             }
         }
     }
@@ -728,7 +733,14 @@ impl SourceMap {
         }
     }
 
-    pub fn def_span(&self, sp: Span) -> Span {
+    /// Given a `Span`, return a span ending in the closest `{`. This is useful when you have a
+    /// `Span` enclosing a whole item but we need to point at only the head (usually the first
+    /// line) of that item.
+    ///
+    /// *Only suitable for diagnostics.*
+    pub fn guess_head_span(&self, sp: Span) -> Span {
+        // FIXME: extend the AST items to have a head span, or replace callers with pointing at
+        // the item's ident when appropriate.
         self.span_until_char(sp, '{')
     }
 

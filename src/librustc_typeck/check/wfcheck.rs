@@ -98,34 +98,48 @@ pub fn check_item_well_formed(tcx: TyCtxt<'_>, def_id: DefId) {
         //
         // won't be allowed unless there's an *explicit* implementation of `Send`
         // for `T`
-        hir::ItemKind::Impl { defaultness, ref of_trait, ref self_ty, .. } => {
+        hir::ItemKind::Impl {
+            defaultness,
+            defaultness_span,
+            polarity,
+            ref of_trait,
+            ref self_ty,
+            ..
+        } => {
             let is_auto = tcx
                 .impl_trait_ref(tcx.hir().local_def_id(item.hir_id))
                 .map_or(false, |trait_ref| tcx.trait_is_auto(trait_ref.def_id));
-            let polarity = tcx.impl_polarity(def_id);
             if let (hir::Defaultness::Default { .. }, true) = (defaultness, is_auto) {
-                tcx.sess.span_err(item.span, "impls of auto traits cannot be default");
+                let sp = of_trait.as_ref().map(|t| t.path.span).unwrap_or(item.span);
+                let mut err =
+                    tcx.sess.struct_span_err(sp, "impls of auto traits cannot be default");
+                err.span_labels(defaultness_span, "default because of this");
+                err.span_label(sp, "auto trait");
+                err.emit();
             }
-            match polarity {
-                ty::ImplPolarity::Positive => {
+            // We match on both `ty::ImplPolarity` and `ast::ImplPolarity` just to get the `!` span.
+            match (tcx.impl_polarity(def_id), polarity) {
+                (ty::ImplPolarity::Positive, _) => {
                     check_impl(tcx, item, self_ty, of_trait);
                 }
-                ty::ImplPolarity::Negative => {
+                (ty::ImplPolarity::Negative, ast::ImplPolarity::Negative(span)) => {
                     // FIXME(#27579): what amount of WF checking do we need for neg impls?
-                    if of_trait.is_some() && !is_auto {
+                    if let hir::Defaultness::Default { .. } = defaultness {
+                        let mut spans = vec![span];
+                        spans.extend(defaultness_span);
                         struct_span_err!(
                             tcx.sess,
-                            item.span,
-                            E0192,
-                            "negative impls are only allowed for \
-                                   auto traits (e.g., `Send` and `Sync`)"
+                            spans,
+                            E0750,
+                            "negative impls cannot be default impls"
                         )
-                        .emit()
+                        .emit();
                     }
                 }
-                ty::ImplPolarity::Reservation => {
+                (ty::ImplPolarity::Reservation, _) => {
                     // FIXME: what amount of WF checking do we need for reservation impls?
                 }
+                _ => unreachable!(),
             }
         }
         hir::ItemKind::Fn(..) => {
@@ -316,12 +330,12 @@ fn for_item<'tcx>(tcx: TyCtxt<'tcx>, item: &hir::Item<'_>) -> CheckWfFcxBuilder<
 }
 
 fn for_id(tcx: TyCtxt<'_>, id: hir::HirId, span: Span) -> CheckWfFcxBuilder<'_> {
-    let def_id = tcx.hir().local_def_id(id);
+    let def_id = tcx.hir().local_def_id(id).expect_local();
     CheckWfFcxBuilder {
         inherited: Inherited::build(tcx, def_id),
         id,
         span,
-        param_env: tcx.param_env(def_id),
+        param_env: tcx.param_env(def_id.to_def_id()),
     }
 }
 
@@ -886,13 +900,13 @@ fn check_opaque_types<'fcx, 'tcx>(
                                             .struct_span_err(
                                                 span,
                                                 "non-defining opaque type use \
-                                                    in defining scope",
+                                                 in defining scope",
                                             )
                                             .span_label(
                                                 param_span,
                                                 "cannot use static lifetime; use a bound lifetime \
-                                                instead or remove the lifetime parameter from the \
-                                                opaque type",
+                                                 instead or remove the lifetime parameter from the \
+                                                 opaque type",
                                             )
                                             .emit();
                                     } else {
@@ -907,13 +921,13 @@ fn check_opaque_types<'fcx, 'tcx>(
                                             .struct_span_err(
                                                 span,
                                                 "non-defining opaque type use \
-                                                in defining scope",
+                                                 in defining scope",
                                             )
                                             .span_note(
                                                 tcx.def_span(param.def_id),
                                                 &format!(
                                                     "used non-generic const {} for \
-                                                    generic parameter",
+                                                     generic parameter",
                                                     ty,
                                                 ),
                                             )
@@ -928,7 +942,7 @@ fn check_opaque_types<'fcx, 'tcx>(
                                     .struct_span_err(
                                         span,
                                         "non-defining opaque type use \
-                                            in defining scope",
+                                         in defining scope",
                                     )
                                     .span_note(spans, "lifetime used multiple times")
                                     .emit();
@@ -1014,7 +1028,7 @@ fn check_method_receiver<'fcx, 'tcx>(
                     span,
                     &format!(
                         "`{}` cannot be used as the type of `self` without \
-                            the `arbitrary_self_types` feature",
+                         the `arbitrary_self_types` feature",
                         receiver_ty,
                     ),
                 )

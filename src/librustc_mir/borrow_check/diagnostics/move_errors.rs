@@ -272,14 +272,14 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, 'tcx> {
         span: Span,
     ) -> DiagnosticBuilder<'a> {
         let description = if place.projection.len() == 1 {
-            format!("static item `{}`", self.describe_place(place.as_ref()).unwrap())
+            format!("static item {}", self.describe_any_place(place.as_ref()))
         } else {
             let base_static = PlaceRef { local: place.local, projection: &[ProjectionElem::Deref] };
 
             format!(
-                "`{:?}` as `{:?}` is a static item",
-                self.describe_place(place.as_ref()).unwrap(),
-                self.describe_place(base_static).unwrap(),
+                "{} as {} is a static item",
+                self.describe_any_place(place.as_ref()),
+                self.describe_any_place(base_static),
             )
         };
 
@@ -333,7 +333,7 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, 'tcx> {
             ty::Closure(def_id, closure_substs)
                 if def_id == self.mir_def_id && upvar_field.is_some() =>
             {
-                let closure_kind_ty = closure_substs.as_closure().kind_ty(def_id, self.infcx.tcx);
+                let closure_kind_ty = closure_substs.as_closure().kind_ty();
                 let closure_kind = closure_kind_ty.to_opt_closure_kind();
                 let capture_description = match closure_kind {
                     Some(ty::ClosureKind::Fn) => "captured variable in an `Fn` closure",
@@ -349,16 +349,14 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, 'tcx> {
                 let upvar_name = upvar.name;
                 let upvar_span = self.infcx.tcx.hir().span(upvar_hir_id);
 
-                let place_name = self.describe_place(move_place.as_ref()).unwrap();
+                let place_name = self.describe_any_place(move_place.as_ref());
 
-                let place_description = if self
-                    .is_upvar_field_projection(move_place.as_ref())
-                    .is_some()
-                {
-                    format!("`{}`, a {}", place_name, capture_description)
-                } else {
-                    format!("`{}`, as `{}` is a {}", place_name, upvar_name, capture_description,)
-                };
+                let place_description =
+                    if self.is_upvar_field_projection(move_place.as_ref()).is_some() {
+                        format!("{}, a {}", place_name, capture_description)
+                    } else {
+                        format!("{}, as `{}` is a {}", place_name, upvar_name, capture_description)
+                    };
 
                 debug!(
                     "report: closure_kind_ty={:?} closure_kind={:?} place_description={:?}",
@@ -490,17 +488,13 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, 'tcx> {
                 {
                     if pat_snippet.starts_with('&') {
                         let pat_snippet = pat_snippet[1..].trim_start();
-                        let suggestion;
-                        let to_remove;
-                        if pat_snippet.starts_with("mut")
+                        let (suggestion, to_remove) = if pat_snippet.starts_with("mut")
                             && pat_snippet["mut".len()..].starts_with(rustc_lexer::is_whitespace)
                         {
-                            suggestion = pat_snippet["mut".len()..].trim_start();
-                            to_remove = "&mut";
+                            (pat_snippet["mut".len()..].trim_start(), "&mut")
                         } else {
-                            suggestion = pat_snippet;
-                            to_remove = "&";
-                        }
+                            (pat_snippet, "&")
+                        };
                         suggestions.push((pat_span, to_remove, suggestion.to_owned()));
                     }
                 }

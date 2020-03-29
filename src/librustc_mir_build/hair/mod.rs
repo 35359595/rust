@@ -229,7 +229,7 @@ crate enum ExprKind<'tcx> {
     },
     Repeat {
         value: ExprRef<'tcx>,
-        count: u64,
+        count: &'tcx Const<'tcx>,
     },
     Array {
         fields: Vec<ExprRef<'tcx>>,
@@ -277,8 +277,8 @@ crate enum ExprKind<'tcx> {
         literal: &'tcx Const<'tcx>,
         def_id: DefId,
     },
-    InlineAsm {
-        asm: &'tcx hir::InlineAsmInner,
+    LlvmInlineAsm {
+        asm: &'tcx hir::LlvmInlineAsmInner,
         outputs: Vec<ExprRef<'tcx>>,
         inputs: Vec<ExprRef<'tcx>>,
     },

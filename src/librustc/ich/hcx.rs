@@ -1,5 +1,4 @@
-use crate::hir::map::definitions::{DefPathHash, Definitions};
-use crate::ich::{self, CachingSourceMapView};
+use crate::ich;
 use crate::middle::cstore::CrateStore;
 use crate::ty::{fast_reject, TyCtxt};
 
@@ -9,10 +8,11 @@ use rustc_data_structures::stable_hasher::{HashStable, StableHasher};
 use rustc_data_structures::sync::Lrc;
 use rustc_hir as hir;
 use rustc_hir::def_id::{DefId, LocalDefId};
+use rustc_hir::definitions::{DefPathHash, Definitions};
 use rustc_session::Session;
 use rustc_span::source_map::SourceMap;
 use rustc_span::symbol::Symbol;
-use rustc_span::{BytePos, SourceFile};
+use rustc_span::{BytePos, CachingSourceMapView, SourceFile};
 
 use smallvec::SmallVec;
 use std::cmp::Ord;
@@ -137,7 +137,7 @@ impl<'a> StableHashingContext<'a> {
 
     #[inline]
     pub fn node_to_hir_id(&self, node_id: ast::NodeId) -> hir::HirId {
-        self.definitions.node_to_hir_id(node_id)
+        self.definitions.node_id_to_hir_id(node_id)
     }
 
     #[inline]
@@ -193,8 +193,6 @@ impl<'a> StableHashingContextProvider<'a> for StableHashingContext<'a> {
         self.clone()
     }
 }
-
-impl<'a> crate::dep_graph::DepGraphSafe for StableHashingContext<'a> {}
 
 impl<'a> HashStable<StableHashingContext<'a>> for ast::NodeId {
     fn hash_stable(&self, _: &mut StableHashingContext<'a>, _: &mut StableHasher) {

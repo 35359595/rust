@@ -49,7 +49,7 @@
 //! For generators with state 1 (returned) and state 2 (poisoned) it does nothing.
 //! Otherwise it drops all the values in scope at the last suspension point.
 
-use crate::dataflow::generic::{self as dataflow, Analysis};
+use crate::dataflow::{self, Analysis};
 use crate::dataflow::{MaybeBorrowedLocals, MaybeRequiresStorage, MaybeStorageLive};
 use crate::transform::no_landing_pads::no_landing_pads;
 use crate::transform::simplify;
@@ -357,18 +357,11 @@ impl MutVisitor<'tcx> for TransformVisitor<'tcx> {
     }
 }
 
-fn make_generator_state_argument_indirect<'tcx>(
-    tcx: TyCtxt<'tcx>,
-    def_id: DefId,
-    body: &mut BodyAndCache<'tcx>,
-) {
+fn make_generator_state_argument_indirect<'tcx>(tcx: TyCtxt<'tcx>, body: &mut BodyAndCache<'tcx>) {
     let gen_ty = body.local_decls.raw[1].ty;
 
-    let region = ty::ReFree(ty::FreeRegion { scope: def_id, bound_region: ty::BoundRegion::BrEnv });
-
-    let region = tcx.mk_region(region);
-
-    let ref_gen_ty = tcx.mk_ref(region, ty::TypeAndMut { ty: gen_ty, mutbl: hir::Mutability::Mut });
+    let ref_gen_ty =
+        tcx.mk_ref(tcx.lifetimes.re_erased, ty::TypeAndMut { ty: gen_ty, mutbl: Mutability::Mut });
 
     // Replace the by value generator argument
     body.local_decls.raw[1].ty = ref_gen_ty;
@@ -874,7 +867,6 @@ fn elaborate_generator_drops<'tcx>(
 fn create_generator_drop_shim<'tcx>(
     tcx: TyCtxt<'tcx>,
     transform: &TransformVisitor<'tcx>,
-    def_id: DefId,
     source: MirSource<'tcx>,
     gen_ty: Ty<'tcx>,
     body: &mut BodyAndCache<'tcx>,
@@ -912,7 +904,7 @@ fn create_generator_drop_shim<'tcx>(
         local_info: LocalInfo::Other,
     };
 
-    make_generator_state_argument_indirect(tcx, def_id, &mut body);
+    make_generator_state_argument_indirect(tcx, &mut body);
 
     // Change the generator argument from &mut to *mut
     body.local_decls[SELF_ARG] = LocalDecl {
@@ -1047,7 +1039,6 @@ fn can_unwind<'tcx>(tcx: TyCtxt<'tcx>, body: &Body<'tcx>) -> bool {
 fn create_generator_resume_function<'tcx>(
     tcx: TyCtxt<'tcx>,
     transform: TransformVisitor<'tcx>,
-    def_id: DefId,
     source: MirSource<'tcx>,
     body: &mut BodyAndCache<'tcx>,
     can_return: bool,
@@ -1112,7 +1103,7 @@ fn create_generator_resume_function<'tcx>(
 
     insert_switch(body, cases, &transform, TerminatorKind::Unreachable);
 
-    make_generator_state_argument_indirect(tcx, def_id, body);
+    make_generator_state_argument_indirect(tcx, body);
     make_generator_state_argument_pinned(tcx, body);
 
     no_landing_pads(tcx, body);
@@ -1245,8 +1236,8 @@ impl<'tcx> MirPass<'tcx> for StateTransform {
             ty::Generator(_, substs, movability) => {
                 let substs = substs.as_generator();
                 (
-                    substs.upvar_tys(def_id, tcx).collect(),
-                    substs.witness(def_id, tcx),
+                    substs.upvar_tys().collect(),
+                    substs.witness(),
                     substs.discr_ty(tcx),
                     movability == hir::Movability::Movable,
                 )
@@ -1332,11 +1323,11 @@ impl<'tcx> MirPass<'tcx> for StateTransform {
 
         // Create a copy of our MIR and use it to create the drop shim for the generator
         let drop_shim =
-            create_generator_drop_shim(tcx, &transform, def_id, source, gen_ty, body, drop_clean);
+            create_generator_drop_shim(tcx, &transform, source, gen_ty, body, drop_clean);
 
         body.generator_drop = Some(box drop_shim);
 
         // Create the Generator::resume function
-        create_generator_resume_function(tcx, transform, def_id, source, body, can_return);
+        create_generator_resume_function(tcx, transform, source, body, can_return);
     }
 }

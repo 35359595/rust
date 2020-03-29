@@ -184,14 +184,13 @@ impl<'b, 'a, 'tcx> Gatherer<'b, 'a, 'tcx> {
             ..
         } = self.builder;
         *rev_lookup.projections.entry((base, elem.lift())).or_insert_with(move || {
-            let path = MoveDataBuilder::new_move_path(
+            MoveDataBuilder::new_move_path(
                 move_paths,
                 path_map,
                 init_path_map,
                 Some(base),
                 mk_place(*tcx),
-            );
-            path
+            )
         })
     }
 
@@ -296,7 +295,7 @@ impl<'b, 'a, 'tcx> Gatherer<'b, 'a, 'tcx> {
             StatementKind::FakeRead(_, ref place) => {
                 self.create_move_path(place);
             }
-            StatementKind::InlineAsm(ref asm) => {
+            StatementKind::LlvmInlineAsm(ref asm) => {
                 for (output, kind) in asm.outputs.iter().zip(&asm.asm.outputs) {
                     if !kind.is_indirect {
                         self.gather_init(output.as_ref(), InitKind::Deep);

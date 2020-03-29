@@ -18,7 +18,6 @@ use crate::type_error_struct;
 use crate::util::common::ErrorReported;
 
 use rustc::middle::lang_items;
-use rustc::mir::interpret::ErrorHandled;
 use rustc::ty;
 use rustc::ty::adjustment::{Adjust, Adjustment, AllowTwoPhase, AutoBorrow, AutoBorrowMutability};
 use rustc::ty::Ty;
@@ -231,7 +230,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 self.check_expr_addr_of(kind, mutbl, oprnd, expected, expr)
             }
             ExprKind::Path(ref qpath) => self.check_expr_path(qpath, expr),
-            ExprKind::InlineAsm(ref asm) => {
+            ExprKind::LlvmInlineAsm(ref asm) => {
                 for expr in asm.outputs_exprs.iter().chain(asm.inputs_exprs.iter()) {
                     self.check_expr(expr);
                 }
@@ -476,7 +475,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 tcx.types.err
             }
             Res::Def(DefKind::Ctor(_, CtorKind::Fictive), _) => {
-                report_unexpected_variant_res(tcx, res, expr.span, qpath);
+                report_unexpected_variant_res(tcx, res, expr.span);
                 tcx.types.err
             }
             _ => self.instantiate_value_path(segs, opt_ty, res, expr.span, expr.hir_id).0,
@@ -697,10 +696,13 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     self,
                     &cause,
                     &mut |db| {
-                        db.span_label(
-                            fn_decl.output.span(),
-                            format!("expected `{}` because of this return type", fn_decl.output,),
-                        );
+                        let span = fn_decl.output.span();
+                        if let Ok(snippet) = self.tcx.sess.source_map().span_to_snippet(span) {
+                            db.span_label(
+                                span,
+                                format!("expected `{}` because of this return type", snippet),
+                            );
+                        }
                     },
                     true,
                 );
@@ -1008,13 +1010,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         _expr: &'tcx hir::Expr<'tcx>,
     ) -> Ty<'tcx> {
         let tcx = self.tcx;
-        let count_def_id = tcx.hir().local_def_id(count.hir_id);
-        let count = if self.const_param_def_id(count).is_some() {
-            Ok(self.to_const(count, tcx.type_of(count_def_id)))
-        } else {
-            tcx.const_eval_poly(count_def_id)
-                .map(|val| ty::Const::from_value(tcx, val, tcx.type_of(count_def_id)))
-        };
+        let count = self.to_const(count);
 
         let uty = match expected {
             ExpectHasType(uty) => match uty.kind {
@@ -1042,17 +1038,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         if element_ty.references_error() {
             return tcx.types.err;
         }
-        match count {
-            Ok(count) => tcx.mk_ty(ty::Array(t, count)),
-            Err(ErrorHandled::TooGeneric) => {
-                self.tcx.sess.span_err(
-                    tcx.def_span(count_def_id),
-                    "array lengths can't depend on generic parameters",
-                );
-                tcx.types.err
-            }
-            Err(ErrorHandled::Reported) => tcx.types.err,
-        }
+
+        tcx.mk_ty(ty::Array(t, count))
     }
 
     fn check_expr_tuple(
@@ -1069,16 +1056,13 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             }
         });
 
-        let elt_ts_iter = elts.iter().enumerate().map(|(i, e)| {
-            let t = match flds {
-                Some(ref fs) if i < fs.len() => {
-                    let ety = fs[i].expect_ty();
-                    self.check_expr_coercable_to_type(&e, ety);
-                    ety
-                }
-                _ => self.check_expr_with_expectation(&e, NoExpectation),
-            };
-            t
+        let elt_ts_iter = elts.iter().enumerate().map(|(i, e)| match flds {
+            Some(ref fs) if i < fs.len() => {
+                let ety = fs[i].expect_ty();
+                self.check_expr_coercable_to_type(&e, ety);
+                ety
+            }
+            _ => self.check_expr_with_expectation(&e, NoExpectation),
         });
         let tuple = self.tcx.mk_tup(elt_ts_iter);
         if tuple.references_error() {
@@ -1583,13 +1567,14 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         };
         let mut err = struct_span_err!(
             self.tcx().sess,
-            expr.span,
+            field.span,
             E0616,
             "field `{}` of {} `{}` is private",
             field,
             kind_name,
             struct_path
         );
+        err.span_label(field.span, "private field");
         // Also check if an accessible method exists, which is often what is meant.
         if self.method_exists(field, expr_t, expr.hir_id, false) && !self.expr_in_place(expr.hir_id)
         {
@@ -1614,7 +1599,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             field,
             expr_t
         );
-
+        err.span_label(field.span, "method, not a field");
         if !self.expr_in_place(expr.hir_id) {
             self.suggest_method_call(
                 &mut err,
@@ -1686,20 +1671,16 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         if let (Some(len), Ok(user_index)) =
             (len.try_eval_usize(self.tcx, self.param_env), field.as_str().parse::<u64>())
         {
-            let base = self
-                .tcx
-                .sess
-                .source_map()
-                .span_to_snippet(base.span)
-                .unwrap_or_else(|_| self.tcx.hir().hir_to_pretty_string(base.hir_id));
-            let help = "instead of using tuple indexing, use array indexing";
-            let suggestion = format!("{}[{}]", base, field);
-            let applicability = if len < user_index {
-                Applicability::MachineApplicable
-            } else {
-                Applicability::MaybeIncorrect
-            };
-            err.span_suggestion(expr.span, help, suggestion, applicability);
+            if let Ok(base) = self.tcx.sess.source_map().span_to_snippet(base.span) {
+                let help = "instead of using tuple indexing, use array indexing";
+                let suggestion = format!("{}[{}]", base, field);
+                let applicability = if len < user_index {
+                    Applicability::MachineApplicable
+                } else {
+                    Applicability::MaybeIncorrect
+                };
+                err.span_suggestion(expr.span, help, suggestion, applicability);
+            }
         }
     }
 
@@ -1710,15 +1691,11 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         base: &hir::Expr<'_>,
         field: ast::Ident,
     ) {
-        let base = self
-            .tcx
-            .sess
-            .source_map()
-            .span_to_snippet(base.span)
-            .unwrap_or_else(|_| self.tcx.hir().hir_to_pretty_string(base.hir_id));
-        let msg = format!("`{}` is a raw pointer; try dereferencing it", base);
-        let suggestion = format!("(*{}).{}", base, field);
-        err.span_suggestion(expr.span, &msg, suggestion, Applicability::MaybeIncorrect);
+        if let Ok(base) = self.tcx.sess.source_map().span_to_snippet(base.span) {
+            let msg = format!("`{}` is a raw pointer; try dereferencing it", base);
+            let suggestion = format!("(*{}).{}", base, field);
+            err.span_suggestion(expr.span, &msg, suggestion, Applicability::MaybeIncorrect);
+        }
     }
 
     fn no_such_field_err<T: Display>(

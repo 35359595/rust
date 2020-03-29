@@ -1,7 +1,6 @@
 use crate::arena::Arena;
-use crate::hir::map::definitions::{self, DefPathHash};
 use crate::hir::map::{Entry, HirOwnerData, Map};
-use crate::hir::{HirItem, HirOwner, HirOwnerItems};
+use crate::hir::{Owner, OwnerNodes, ParentedNode};
 use crate::ich::StableHashingContext;
 use crate::middle::cstore::CrateStore;
 use rustc_data_structures::fingerprint::Fingerprint;
@@ -11,6 +10,7 @@ use rustc_data_structures::svh::Svh;
 use rustc_hir as hir;
 use rustc_hir::def_id::CRATE_DEF_INDEX;
 use rustc_hir::def_id::{LocalDefId, LOCAL_CRATE};
+use rustc_hir::definitions::{self, DefPathHash};
 use rustc_hir::intravisit::{self, NestedVisitorMap, Visitor};
 use rustc_hir::*;
 use rustc_index::vec::{Idx, IndexVec};
@@ -203,30 +203,30 @@ impl<'a, 'hir> NodeCollector<'a, 'hir> {
         let data = &mut self.map[id.owner];
 
         if data.with_bodies.is_none() {
-            data.with_bodies = Some(arena.alloc(HirOwnerItems {
+            data.with_bodies = Some(arena.alloc(OwnerNodes {
                 hash,
-                items: IndexVec::new(),
+                nodes: IndexVec::new(),
                 bodies: FxHashMap::default(),
             }));
         }
 
-        let items = data.with_bodies.as_mut().unwrap();
+        let nodes = data.with_bodies.as_mut().unwrap();
 
         if i == 0 {
             // Overwrite the dummy hash with the real HIR owner hash.
-            items.hash = hash;
+            nodes.hash = hash;
 
             // FIXME: feature(impl_trait_in_bindings) broken and trigger this assert
             //assert!(data.signature.is_none());
 
             data.signature =
-                Some(self.arena.alloc(HirOwner { parent: entry.parent, node: entry.node }));
+                Some(self.arena.alloc(Owner { parent: entry.parent, node: entry.node }));
         } else {
             assert_eq!(entry.parent.owner, id.owner);
             insert_vec_map(
-                &mut items.items,
+                &mut nodes.nodes,
                 id.local_id,
-                HirItem { parent: entry.parent.local_id, node: entry.node },
+                ParentedNode { parent: entry.parent.local_id, node: entry.node },
             );
         }
     }
@@ -241,8 +241,8 @@ impl<'a, 'hir> NodeCollector<'a, 'hir> {
         // Make sure that the DepNode of some node coincides with the HirId
         // owner of that node.
         if cfg!(debug_assertions) {
-            let node_id = self.definitions.hir_to_node_id(hir_id);
-            assert_eq!(self.definitions.node_to_hir_id(node_id), hir_id);
+            let node_id = self.definitions.hir_id_to_node_id(hir_id);
+            assert_eq!(self.definitions.node_id_to_hir_id(node_id), hir_id);
 
             if hir_id.owner != self.current_dep_node_owner {
                 let node_str = match self.definitions.opt_local_def_id(node_id) {
@@ -342,7 +342,9 @@ impl<'a, 'hir> Visitor<'hir> for NodeCollector<'a, 'hir> {
         debug!("visit_item: {:?}", i);
         debug_assert_eq!(
             i.hir_id.owner,
-            self.definitions.opt_local_def_id(self.definitions.hir_to_node_id(i.hir_id)).unwrap()
+            self.definitions
+                .opt_local_def_id(self.definitions.hir_id_to_node_id(i.hir_id))
+                .unwrap()
         );
         self.with_dep_node_owner(i.hir_id.owner, i, |this, hash| {
             this.insert_with_hash(i.span, i.hir_id, Node::Item(i), hash);
@@ -374,7 +376,9 @@ impl<'a, 'hir> Visitor<'hir> for NodeCollector<'a, 'hir> {
     fn visit_trait_item(&mut self, ti: &'hir TraitItem<'hir>) {
         debug_assert_eq!(
             ti.hir_id.owner,
-            self.definitions.opt_local_def_id(self.definitions.hir_to_node_id(ti.hir_id)).unwrap()
+            self.definitions
+                .opt_local_def_id(self.definitions.hir_id_to_node_id(ti.hir_id))
+                .unwrap()
         );
         self.with_dep_node_owner(ti.hir_id.owner, ti, |this, hash| {
             this.insert_with_hash(ti.span, ti.hir_id, Node::TraitItem(ti), hash);
@@ -388,7 +392,9 @@ impl<'a, 'hir> Visitor<'hir> for NodeCollector<'a, 'hir> {
     fn visit_impl_item(&mut self, ii: &'hir ImplItem<'hir>) {
         debug_assert_eq!(
             ii.hir_id.owner,
-            self.definitions.opt_local_def_id(self.definitions.hir_to_node_id(ii.hir_id)).unwrap()
+            self.definitions
+                .opt_local_def_id(self.definitions.hir_id_to_node_id(ii.hir_id))
+                .unwrap()
         );
         self.with_dep_node_owner(ii.hir_id.owner, ii, |this, hash| {
             this.insert_with_hash(ii.span, ii.hir_id, Node::ImplItem(ii), hash);

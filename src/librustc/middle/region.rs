@@ -80,18 +80,8 @@ use std::fmt;
 // placate the same deriving in `ty::FreeRegion`, but we may want to
 // actually attach a more meaningful ordering to scopes than the one
 // generated via deriving here.
-#[derive(
-    Clone,
-    PartialEq,
-    PartialOrd,
-    Eq,
-    Ord,
-    Hash,
-    Copy,
-    RustcEncodable,
-    RustcDecodable,
-    HashStable
-)]
+#[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Hash, Copy, RustcEncodable, RustcDecodable)]
+#[derive(HashStable)]
 pub struct Scope {
     pub id: hir::ItemLocalId,
     pub data: ScopeData,
@@ -114,19 +104,8 @@ impl fmt::Debug for Scope {
     }
 }
 
-#[derive(
-    Clone,
-    PartialEq,
-    PartialOrd,
-    Eq,
-    Ord,
-    Hash,
-    Debug,
-    Copy,
-    RustcEncodable,
-    RustcDecodable,
-    HashStable
-)]
+#[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Hash, Debug, Copy, RustcEncodable, RustcDecodable)]
+#[derive(HashStable)]
 pub enum ScopeData {
     Node,
 
@@ -467,7 +446,7 @@ impl<'tcx> ScopeTree {
         }
 
         debug!("temporary_scope({:?}) = None", expr_id);
-        return None;
+        None
     }
 
     /// Returns the lifetime of the variable `id`.
@@ -498,7 +477,7 @@ impl<'tcx> ScopeTree {
 
         debug!("is_subscope_of({:?}, {:?})=true", subscope, superscope);
 
-        return true;
+        true
     }
 
     /// Returns the ID of the innermost containing body.

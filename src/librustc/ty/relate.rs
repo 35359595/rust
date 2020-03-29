@@ -440,7 +440,7 @@ pub fn super_relate_tys<R: TypeRelation<'tcx>>(
                         (Some(sz_a_val), Some(sz_b_val)) => Err(TypeError::FixedArraySize(
                             expected_found(relation, &sz_a_val, &sz_b_val),
                         )),
-                        _ => return Err(err),
+                        _ => Err(err),
                     }
                 }
             }
@@ -518,7 +518,7 @@ pub fn super_relate_consts<R: TypeRelation<'tcx>>(
 
     // Currently, the values that can be unified are primitive types,
     // and those that derive both `PartialEq` and `Eq`, corresponding
-    // to `structural_match` types.
+    // to structural-match types.
     let new_const_val = match (eagerly_eval(a), eagerly_eval(b)) {
         (ty::ConstKind::Infer(_), _) | (_, ty::ConstKind::Infer(_)) => {
             // The caller should handle these cases!

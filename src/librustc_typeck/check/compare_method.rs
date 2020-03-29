@@ -35,7 +35,7 @@ crate fn compare_impl_method<'tcx>(
 ) {
     debug!("compare_impl_method(impl_trait_ref={:?})", impl_trait_ref);
 
-    let impl_m_span = tcx.sess.source_map().def_span(impl_m_span);
+    let impl_m_span = tcx.sess.source_map().guess_head_span(impl_m_span);
 
     if let Err(ErrorReported) = compare_self_type(tcx, impl_m, impl_m_span, trait_m, impl_trait_ref)
     {
@@ -213,7 +213,7 @@ fn compare_predicate_entailment<'tcx>(
     );
 
     tcx.infer_ctxt().enter(|infcx| {
-        let inh = Inherited::new(infcx, impl_m.def_id);
+        let inh = Inherited::new(infcx, impl_m.def_id.expect_local());
         let infcx = &inh.infcx;
 
         debug!("compare_impl_method: caller_bounds={:?}", param_env.caller_bounds);
@@ -363,7 +363,7 @@ fn check_region_bounds_on_impl_item<'tcx>(
     // the moment, give a kind of vague error message.
     if trait_params != impl_params {
         let item_kind = assoc_item_kind_str(impl_m);
-        let def_span = tcx.sess.source_map().def_span(span);
+        let def_span = tcx.sess.source_map().guess_head_span(span);
         let span = tcx.hir().get_generics(impl_m.def_id).map(|g| g.span).unwrap_or(def_span);
         let mut err = struct_span_err!(
             tcx.sess,
@@ -375,7 +375,7 @@ fn check_region_bounds_on_impl_item<'tcx>(
         );
         err.span_label(span, &format!("lifetimes do not match {} in trait", item_kind));
         if let Some(sp) = tcx.hir().span_if_local(trait_m.def_id) {
-            let def_sp = tcx.sess.source_map().def_span(sp);
+            let def_sp = tcx.sess.source_map().guess_head_span(sp);
             let sp = tcx.hir().get_generics(trait_m.def_id).map(|g| g.span).unwrap_or(def_sp);
             err.span_label(
                 sp,
@@ -677,7 +677,7 @@ fn compare_number_of_generics<'tcx>(
                         impl_count,
                         kind,
                         pluralize!(impl_count),
-                        suffix.unwrap_or_else(|| String::new()),
+                        suffix.unwrap_or_else(String::new),
                     ),
                 );
             }
@@ -950,7 +950,7 @@ crate fn compare_const_impl<'tcx>(
 
     tcx.infer_ctxt().enter(|infcx| {
         let param_env = tcx.param_env(impl_c.def_id);
-        let inh = Inherited::new(infcx, impl_c.def_id);
+        let inh = Inherited::new(infcx, impl_c.def_id.expect_local());
         let infcx = &inh.infcx;
 
         // The below is for the most part highly similar to the procedure
@@ -1130,7 +1130,7 @@ fn compare_type_predicate_entailment(
         normalize_cause.clone(),
     );
     tcx.infer_ctxt().enter(|infcx| {
-        let inh = Inherited::new(infcx, impl_ty.def_id);
+        let inh = Inherited::new(infcx, impl_ty.def_id.expect_local());
         let infcx = &inh.infcx;
 
         debug!("compare_type_predicate_entailment: caller_bounds={:?}", param_env.caller_bounds);

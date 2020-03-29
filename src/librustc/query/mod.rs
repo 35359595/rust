@@ -9,7 +9,7 @@ use crate::traits::query::{
 };
 use crate::ty::query::queries;
 use crate::ty::query::QueryDescription;
-use crate::ty::subst::SubstsRef;
+use crate::ty::subst::{GenericArg, SubstsRef};
 use crate::ty::{self, ParamEnvAnd, Ty, TyCtxt};
 use rustc_hir::def_id::{CrateNum, DefId, LocalDefId};
 
@@ -64,6 +64,7 @@ rustc_queries! {
         }
 
         // The items in a module.
+        //
         // This can be conveniently accessed by `tcx.hir().visit_item_likes_in_module`.
         // Avoid calling this query directly.
         query hir_module_items(key: LocalDefId) -> &'tcx hir::ModuleItems {
@@ -71,20 +72,20 @@ rustc_queries! {
             desc { |tcx| "HIR module items in `{}`", tcx.def_path_str(key.to_def_id()) }
         }
 
-        // An HIR item with a `LocalDefId` that can own other HIR items which do
-        // not themselves have a `LocalDefId`.
+        // Gives access to the HIR node for the HIR owner `key`.
+        //
         // This can be conveniently accessed by methods on `tcx.hir()`.
         // Avoid calling this query directly.
-        query hir_owner(key: LocalDefId) -> &'tcx HirOwner<'tcx> {
+        query hir_owner(key: LocalDefId) -> Option<&'tcx crate::hir::Owner<'tcx>> {
             eval_always
             desc { |tcx| "HIR owner of `{}`", tcx.def_path_str(key.to_def_id()) }
         }
 
-        // The HIR items which do not themselves have a `LocalDefId` and are
-        // owned by another HIR item with a `LocalDefId`.
+        // Gives access to the HIR nodes and bodies inside the HIR owner `key`.
+        //
         // This can be conveniently accessed by methods on `tcx.hir()`.
         // Avoid calling this query directly.
-        query hir_owner_items(key: LocalDefId) -> &'tcx HirOwnerItems<'tcx> {
+        query hir_owner_nodes(key: LocalDefId) -> Option<&'tcx crate::hir::OwnerNodes<'tcx>> {
             eval_always
             desc { |tcx| "HIR owner items in `{}`", tcx.def_path_str(key.to_def_id()) }
         }
@@ -737,7 +738,7 @@ rustc_queries! {
 
         query layout_raw(
             env: ty::ParamEnvAnd<'tcx, Ty<'tcx>>
-        ) -> Result<&'tcx ty::layout::LayoutDetails, ty::layout::LayoutError<'tcx>> {
+        ) -> Result<&'tcx ty::layout::Layout, ty::layout::LayoutError<'tcx>> {
             desc { "computing layout of `{}`", env.value }
         }
     }
@@ -1113,10 +1114,10 @@ rustc_queries! {
         }
 
         /// Do not call this query directly: invoke `normalize_erasing_regions` instead.
-        query normalize_ty_after_erasing_regions(
-            goal: ParamEnvAnd<'tcx, Ty<'tcx>>
-        ) -> Ty<'tcx> {
-            desc { "normalizing `{:?}`", goal }
+        query normalize_generic_arg_after_erasing_regions(
+            goal: ParamEnvAnd<'tcx, GenericArg<'tcx>>
+        ) -> GenericArg<'tcx> {
+            desc { "normalizing `{}`", goal.value }
         }
 
         query implied_outlives_bounds(

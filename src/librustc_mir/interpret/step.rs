@@ -3,7 +3,7 @@
 //! The main entry point is the `step` method.
 
 use rustc::mir;
-use rustc::mir::interpret::{InterpResult, PointerArithmetic, Scalar};
+use rustc::mir::interpret::{InterpResult, Scalar};
 use rustc::ty::layout::LayoutOf;
 
 use super::{InterpCx, Machine};
@@ -124,7 +124,7 @@ impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
             // size of MIR constantly.
             Nop => {}
 
-            InlineAsm { .. } => throw_unsup_format!("inline assembly is not supported"),
+            LlvmInlineAsm { .. } => throw_unsup_format!("inline assembly is not supported"),
         }
 
         self.stack[frame_idx].stmt += 1;
@@ -192,7 +192,7 @@ impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
                     // Ignore zero-sized fields.
                     if !op.layout.is_zst() {
                         let field_index = active_field_index.unwrap_or(i);
-                        let field_dest = self.place_field(dest, field_index as u64)?;
+                        let field_dest = self.place_field(dest, field_index)?;
                         self.copy_op(op, field_dest)?;
                     }
                 }
@@ -229,8 +229,7 @@ impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
                 let src = self.eval_place(place)?;
                 let mplace = self.force_allocation(src)?;
                 let len = mplace.len(self)?;
-                let size = self.pointer_size();
-                self.write_scalar(Scalar::from_uint(len, size), dest)?;
+                self.write_scalar(Scalar::from_machine_usize(len, self), dest)?;
             }
 
             AddressOf(_, ref place) | Ref(_, _, ref place) => {
@@ -248,14 +247,13 @@ impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
             }
 
             NullaryOp(mir::NullOp::SizeOf, ty) => {
-                let ty = self.subst_from_frame_and_normalize_erasing_regions(ty);
+                let ty = self.subst_from_current_frame_and_normalize_erasing_regions(ty);
                 let layout = self.layout_of(ty)?;
                 assert!(
                     !layout.is_unsized(),
                     "SizeOf nullary MIR operator called for unsized type"
                 );
-                let size = self.pointer_size();
-                self.write_scalar(Scalar::from_uint(layout.size.bytes(), size), dest)?;
+                self.write_scalar(Scalar::from_machine_usize(layout.size.bytes(), self), dest)?;
             }
 
             Cast(kind, ref operand, _) => {
